@@ -35,3 +35,14 @@ def send_whatsapp_text(to: str, text: str):
     if provider == "twilio":
         return send_twilio(to, text)
     return send_meta(to, text)
+def send_twilio_document(to: str, media_url: str, caption: str = ""):
+    acc = os.getenv("TWILIO_ACCOUNT_SID"); tok = os.getenv("TWILIO_AUTH_TOKEN"); from_ = os.getenv("TWILIO_FROM")
+    if not (acc and tok and from_):
+        print("WARN: Twilio ENV fehlt – kein Dokumentversand.")
+        return
+    Client(acc, tok).messages.create(
+        from_=f"whatsapp:{from_}",
+        to=f"whatsapp:{to}",
+        body=caption[:1024] if caption else None,
+        media_url=[media_url]
+    )
