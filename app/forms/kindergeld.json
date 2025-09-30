@@ -1,0 +1,22 @@
+{
+  "order": [
+    "full_name",
+    "dob",
+    "addr_street",
+    "addr_plz",
+    "addr_city",
+    "taxid_parent",
+    "iban",
+    "marital",
+    "citizenship",
+    "employment",
+    "start_month"
+  ],
+  "types": {
+    "dob": "date",
+    "addr_plz": "plz",
+    "iban": "iban",
+    "taxid_parent": "taxid",
+    "start_month": "monat"
+  }
+}
