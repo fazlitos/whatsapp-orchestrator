@@ -7,6 +7,8 @@ import pathlib
 
 
 app = FastAPI()
+ART_DIR = os.environ.get("ART_DIR", "/tmp/artifacts")
+pathlib.Path(ART_DIR).mkdir(parents=True, exist_ok=True)
 log = logging.getLogger("uvicorn")
 
 @app.get("/health")
@@ -56,3 +58,7 @@ def detect_lang(text: str) -> str:
     if any(w in low for w in ["hello", "yes", "no", "child benefit"]): return "en"
     if any(w in low for w in ["përshëndetje","pershendetje","faleminderit","po","jo"]): return "sq"
     return "de"
+@app.get("/artifact/{filename}")
+def get_artifact(filename: str):
+    path = os.path.join(ART_DIR, filename)
+    return FileResponse(path, filename=filename, media_type="application/pdf")
