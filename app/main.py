@@ -62,3 +62,33 @@ def detect_lang(text: str) -> str:
 def get_artifact(filename: str):
     path = os.path.join(ART_DIR, filename)
     return FileResponse(path, filename=filename, media_type="application/pdf")
+    from fastapi.responses import FileResponse, JSONResponse
+from app.pdf.filler import list_fields, fill_kindergeld, template_path
+import pathlib, os
+
+ART_DIR = pathlib.Path("/tmp/artifacts"); ART_DIR.mkdir(exist_ok=True)
+
+@app.get("/pdf/fields")
+def pdf_fields(template: str = "kg1"):
+    # zeigt dir alle Text-Feldnamen aus der PDF – nützlich um mapping/kg1.json zu justieren
+    return JSONResponse({"template": template, "fields": list_fields(template_path(template))})
+
+@app.post("/make-pdf")
+async def make_pdf(payload: dict):
+    # payload = {"form":"kindergeld","data":{"fields": {...}, "kids":[...]}}
+    form = payload.get("form")
+    data = payload.get("data", {})
+    if form != "kindergeld":
+        return JSONResponse({"error":"unsupported form"}, status_code=400)
+
+    pdf_path = fill_kindergeld(data.get("fields", {}), data.get("kids", []), out_dir=str(ART_DIR))
+    fid = os.path.basename(pdf_path)
+    base = os.getenv("APP_BASE_URL","").rstrip("/")
+    if not base.startswith("http"): base = "https://" + base
+    return {"id": fid, "url": f"{base}/artifact/{fid}"}
+
+@app.get("/artifact/{fid}")
+def get_artifact(fid: str):
+    path = ART_DIR / fid
+    return FileResponse(path, media_type="application/pdf", filename=fid)
+
