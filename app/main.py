@@ -2,6 +2,9 @@ from fastapi import FastAPI, Request, Form, Response
 import os, logging
 from app.orchestrator import handle_message
 from app.providers import send_whatsapp_text  # <-- neu
+from fastapi.responses import FileResponse
+import pathlib
+
 
 app = FastAPI()
 log = logging.getLogger("uvicorn")
