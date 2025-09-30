@@ -2,7 +2,7 @@ services:
   - type: web
     name: whatsapp-orchestrator
     env: docker
-    plan: starter
+    plan: free            # für Tests: free (oder starter, wenn du willst)
     autoDeploy: true
     envVars:
       - key: WHATSAPP_VERIFY_TOKEN
@@ -14,4 +14,5 @@ services:
       - key: APP_BASE_URL
         value: https://example.onrender.com
     healthCheckPath: /health
-    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port 10000"
+    # KEIN startCommand hier – Dockerfile hat bereits CMD
+
