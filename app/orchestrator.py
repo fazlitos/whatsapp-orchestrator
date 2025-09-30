@@ -1,6 +1,10 @@
 import json, re
 from pathlib import Path
 from app.validators import normalize_value, is_complete
+import os, httpx
+from app.pdf.filler import create_kindergeld_pdf
+from app.providers import send_twilio_document
+
 
 # In-Memory State (für Tests). In Produktion: Redis/DB verwenden.
 STATE = {}
@@ -39,6 +43,29 @@ def ensure_state(user: str):
 
 def t(lang: str, key: str, **kw):
     return LOCALES.get(lang, LOCALES["de"]).get(key, key).format(**kw)
+def render_summary(fields, kids):
+    lines = []
+    lines.append("Bitte prüfe deine Angaben:")
+    lines.append(f"- Name: {fields.get('full_name','')}")
+    lines.append(f"- Geburtsdatum: {fields.get('dob','')}")
+    lines.append(f"- Adresse: {fields.get('addr_street','')} {fields.get('addr_plz','')} {fields.get('addr_city','')}")
+    lines.append(f"- Steuer-ID: {fields.get('taxid_parent','')}")
+    lines.append(f"- IBAN: {fields.get('iban','')}")
+    lines.append(f"- Familienstand: {fields.get('marital','')}")
+    lines.append(f"- Staatsangehörigkeit: {fields.get('citizenship','')}")
+    lines.append(f"- Beschäftigung: {fields.get('employment','')}")
+    lines.append(f"- Beginn (MM.JJJJ): {fields.get('start_month','')}")
+    lines.append("")
+    for i,k in enumerate(kids,1):
+        lines.append(f"Kind #{i}: {k.get('kid_name','')}, {k.get('kid_dob','')} – {k.get('kid_status','')}")
+    return "\n".join(lines)
+
+def build_pdf_and_url(form: str, fields: dict, kids: list):
+    fid, _ = create_kindergeld_pdf(fields, kids)  # für jetzt nur Kindergeld
+    base = os.getenv("APP_BASE_URL","").rstrip("/")
+    if not base.startswith("http"):  # z. B. 'whatsapp-orchestrator.onrender.com'
+        base = f"https://{base}"
+    return f"{base}/artifact/{fid}"
 
 def handle_message(user: str, text: str, lang: str = "de") -> str:
     st = ensure_state(user)
@@ -119,11 +146,29 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
                     if len(st["kids"]) < st["fields"]["kid_count"]:
                         return t(lang, "ask_kid_name", i=len(st["kids"])+1)
 
-    # 4) Abschlussprüfung
-    ready, missing = is_complete(st["form"], st["fields"], st.get("kids", []))
-    if ready:
-        st["phase"] = "ready"
-        return t(lang, "ready_submit")
-    else:
-        # frage das erste fehlende Feld erneut
-        return t(lang, "ask_" + missing[0])
+    # 4) Abschlussprüfung + Confirm → PDF senden
+ready, missing = is_complete(st["form"], st["fields"], st.get("kids", []))
+if not ready:
+    return t(lang, "ask_" + missing[0])
+
+# Falls noch nicht bestätigt: Zusammenfassung schicken
+if st.get("phase") != "confirm":
+    st["phase"] = "confirm"
+    summary = render_summary(st["fields"], st.get("kids", []))
+    return summary + "\n\nSind die Angaben korrekt und darf ich die PDF hier senden? (Ja/Nein)"
+
+# Antwort auf Bestätigung auswerten
+v = normalize_value("bool", text)
+if v is True:
+    url = build_pdf_and_url(st["form"], st["fields"], st.get("kids", []))
+    send_twilio_document(user, url, caption="Kindergeld-Antrag (PDF)")
+    st["phase"] = "done"
+    return "Fertig! Ich habe dir die PDF gesendet. Wenn du etwas ändern willst, schreib einfach das Feld mit neuem Wert (z. B. „IBAN: DE…“)."
+elif v is False:
+    # einfache Korrekturstrategie: Neustart ab erstem fehlenden Feld
+    st["phase"] = "collect"
+    st["idx"] = 0
+    st["fields"].pop("full_name", None)  # Beispiel: fange wieder vorne an
+    return "Alles klar. Dann lass uns die Angaben noch einmal kurz sauber durchgehen. Wie lautet dein voller Name?"
+else:
+    return "Bitte ant
