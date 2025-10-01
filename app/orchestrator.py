@@ -5,7 +5,15 @@ import json
 import uuid
 import httpx
 from pathlib import Path
+
 from app.validators import normalize_value, is_complete
+
+# Optional: LLM-Extraktor (wenn kein Key vorhanden, fällt Code unten automatisch zurück)
+try:
+    from app.agents import extract_updates_from_text
+    LLM_AVAILABLE = True
+except Exception:
+    LLM_AVAILABLE = False
 
 # ---------- Artefakte (lokal) ----------
 ART_DIR = Path("/tmp/artifacts")
@@ -16,8 +24,10 @@ STATE = {}
 
 BASE = Path(__file__).resolve().parent
 
+
 def _load_json(p: Path):
     return json.loads(p.read_text(encoding="utf-8"))
+
 
 # ---------- Mehrsprachige Prompts ----------
 LOCALES = {
@@ -26,63 +36,69 @@ LOCALES = {
     "sq": _load_json(BASE / "locales" / "sq.json"),
 }
 
+
 def t(lang: str, key: str, **kw):
     return LOCALES.get(lang, LOCALES["de"]).get(key, key).format(**kw)
+
 
 # ---------- Formulare ----------
 def load_form(name: str):
     return _load_json(BASE / "forms" / f"{name}.json")
+
 
 FORMS = {
     "kindergeld": load_form("kindergeld"),
     # weitere Formulare später hier registrieren
 }
 
+
 def ensure_state(user: str):
-    STATE.setdefault(user, {
-        "form": "kindergeld",
-        "fields": {},
-        "kids": [],
-        "phase": "collect",
-        "idx": 0,
-        "lang": "de",
-    })
+    STATE.setdefault(
+        user,
+        {
+            "form": "kindergeld",
+            "fields": {},
+            "kids": [],
+            "phase": "collect",
+            "idx": 0,
+            "lang": "de",
+        },
+    )
     return STATE[user]
 
-# ---------- Synonyme für freie Korrekturen ----------
+
+# ---------- Synonyme für Regex-Fallback ----------
 TOP_SYNONYMS = {
-    "full_name":    [r"voller\s+name", r"^name$", r"vor-?\s*und\s*nachname"],
-    "dob":          [r"geburtsdatum", r"geburtstag", r"dob"],
-    "addr_street":  [r"(?:adresse|anschrift|straße|strasse|str\.)"],
-    "addr_plz":     [r"(?:plz|postleitzahl|postal\s*code)"],
-    "addr_city":    [r"(?:ort|stadt|city)"],
+    "full_name": [r"voller\s+name", r"^name$", r"vor-?\s*und\s*nachname"],
+    "dob": [r"geburtsdatum", r"geburtstag", r"dob"],
+    "addr_street": [r"(?:adresse|anschrift|straße|strasse|str\.)"],
+    "addr_plz": [r"(?:plz|postleitzahl|postal\s*code)"],
+    "addr_city": [r"(?:ort|stadt|city)"],
     "taxid_parent": [r"(?:steuer[-\s]?id|idnr\.?|idnr|steuerid)"],
-    "iban":         [r"iban"],
-    "marital":      [r"(?:familienstand|marital)"],
-    "citizenship":  [r"(?:staatsangeh(?:ö|oe)rigkeit|citizenship)"],
-    "employment":   [r"(?:besch(?:ä|a)ftigung|job|occupation|beruf)"],
-    "start_month":  [r"(?:beginn|start(?:monat)?|ab\s+monat|monat)"],
-    "kid_count":    [r"(?:kinderanzahl|anzahl\s+kinder|^kinder$)"],
+    "iban": [r"iban"],
+    "marital": [r"(?:familienstand|marital)"],
+    "citizenship": [r"(?:staatsangeh(?:ö|oe)rigkeit|citizenship)"],
+    "employment": [r"(?:besch(?:ä|a)ftigung|job|occupation|beruf)"],
+    "start_month": [r"(?:beginn|start(?:monat)?|ab\s+monat|monat)"],
+    "kid_count": [r"(?:kinderanzahl|anzahl\s+kinder|^kinder$)"],
 }
 
 KID_SYNONYMS = {
-    "kid_name":       [r"(?:name(?:\s*kind)?|voller\s+name)"],
-    "kid_dob":        [r"(?:geburtsdatum|geburtstag|dob)"],
-    "kid_taxid":      [r"(?:steuer[-\s]?id|idnr\.?|idnr|steuerid)"],
-    "kid_relation":   [r"(?:verwandtschaft|beziehung|relation)"],
-    "kid_cohab":      [r"(?:haushalt|wohnt\s*(?:mit)?|cohab)"],
-    "kid_status":     [r"(?:status|schule|ausbildung|studium|arbeitssuchend|unter_6)"],
+    "kid_name": [r"(?:name(?:\s*kind)?|voller\s+name)"],
+    "kid_dob": [r"(?:geburtsdatum|geburtstag|dob)"],
+    "kid_taxid": [r"(?:steuer[-\s]?id|idnr\.?|idnr|steuerid)"],
+    "kid_relation": [r"(?:verwandtschaft|beziehung|relation)"],
+    "kid_cohab": [r"(?:haushalt|wohnt\s*(?:mit)?|cohab)"],
+    "kid_status": [r"(?:status|schule|ausbildung|studium|arbeitssuchend|unter_6)"],
     "kid_eu_benefit": [r"(?:eu-?leistung|eu\s*benefit|leistungen\s*im\s*ausland)"],
 }
 
-# ---------- Freitext → Updates ----------
+
+# ---------- Freitext → Updates (Regex-Fallback, robust) ----------
 def parse_kv_updates(text: str, form_types: dict, current_kid_index: int | None = None):
-    """
-    Sucht in freiem Text nach 'Feld: Wert' Mustern und gibt validierte Updates zurück.
-    Robuste Version (keine .group() Aufrufe ohne Match).
-    """
+    """Sucht in freiem Text nach 'Feld: Wert' Mustern. Ruft group() nur bei Match auf."""
     updates = {}
-    s = (text or "")
+    s = text or ""
 
     def _extract(pattern: str):
         try:
@@ -95,11 +111,9 @@ def parse_kv_updates(text: str, form_types: dict, current_kid_index: int | None 
         raw = (m.group(1) or "").strip()
         return raw or None
 
-    # Top-Level Felder
     for key, syns in TOP_SYNONYMS.items():
         vtype = form_types.get(key, "string")
         for syn in syns:
-            # kein \b, damit ^/$ in Synonymen weiter funktionieren
             pattern = rf"(?:{syn})\s*[:\-]?\s*([^\n;,]+)"
             raw = _extract(pattern)
             if raw is None:
@@ -109,7 +123,6 @@ def parse_kv_updates(text: str, form_types: dict, current_kid_index: int | None 
                 updates[key] = val
                 break
 
-    # "Nackte" Muster (IBAN, PLZ)
     if "iban" not in updates:
         m = re.search(r"\bDE[0-9 ]{20,}\b", s, re.IGNORECASE)
         if m:
@@ -119,12 +132,15 @@ def parse_kv_updates(text: str, form_types: dict, current_kid_index: int | None 
         if m and normalize_value("plz", m.group(0)):
             updates["addr_plz"] = m.group(0)
 
-    # Kinder-Felder für das aktuell erfasste Kind
     if current_kid_index is not None:
         kid_types = {
-            "kid_name":"string","kid_dob":"date","kid_taxid":"taxid",
-            "kid_relation":"enum_relation","kid_cohab":"bool",
-            "kid_status":"enum_kstatus","kid_eu_benefit":"bool"
+            "kid_name": "string",
+            "kid_dob": "date",
+            "kid_taxid": "taxid",
+            "kid_relation": "enum_relation",
+            "kid_cohab": "bool",
+            "kid_status": "enum_kstatus",
+            "kid_eu_benefit": "bool",
         }
         for key, syns in KID_SYNONYMS.items():
             vtype = kid_types[key]
@@ -140,8 +156,10 @@ def parse_kv_updates(text: str, form_types: dict, current_kid_index: int | None 
 
     return updates
 
+
 def _summary(st):
-    f = st["fields"]; kids = st.get("kids", [])
+    f = st["fields"]
+    kids = st.get("kids", [])
     lines = [
         f"Name: {f.get('full_name','-')}",
         f"Geburtsdatum: {f.get('dob','-')}",
@@ -155,8 +173,11 @@ def _summary(st):
         f"Kinder: {f.get('kid_count','-')}",
     ]
     for i, k in enumerate(kids, 1):
-        lines.append(f"  #{i} {k.get('kid_name','-')} | {k.get('kid_dob','-')} | Steuer-ID: {k.get('kid_taxid','-')}")
+        lines.append(
+            f"  #{i} {k.get('kid_name','-')} | {k.get('kid_dob','-')} | Steuer-ID: {k.get('kid_taxid','-')}"
+        )
     return "\n".join(lines)
+
 
 # ---------- Hauptlogik ----------
 def handle_message(user: str, text: str, lang: str = "de") -> str:
@@ -170,30 +191,107 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
 
     # Befehle
     if low in {"reset", "neu", "start", "neustart"}:
-        STATE[user] = {"form":"kindergeld","fields":{},"kids":[],"phase":"collect","idx":0,"lang":lang}
+        STATE[user] = {
+            "form": "kindergeld",
+            "fields": {},
+            "kids": [],
+            "phase": "collect",
+            "idx": 0,
+            "lang": lang,
+        }
         return t(lang, "ask_" + order[0])
-    if low in {"status","zusammenfassung","summary"}:
+
+    if low in {"status", "zusammenfassung", "summary"}:
         return _summary(st)
 
-    # Freie Korrekturen / Mehrfachangaben
+    # --- LLM-Extraktion (mit Fallback auf Regex) ---
     current_kid_index = None
     if "kid_count" in st["fields"] and len(st["kids"]) < st["fields"]["kid_count"]:
         current_kid_index = len(st["kids"])
-    updates = parse_kv_updates(text, types, current_kid_index)
-    for k, v in updates.items():
+
+    # gezielter: welche Felder fehlen aktuell?
+    _, missing_now = is_complete(st["form"], st["fields"], st.get("kids", []))
+
+    top_updates = {}
+    kids_updates = []
+
+    if LLM_AVAILABLE and os.getenv("OPENAI_API_KEY"):
+        try:
+            out = extract_updates_from_text(
+                text=text or "",
+                known_fields=st["fields"],
+                missing_fields=missing_now,
+                current_kid_index=current_kid_index,
+            )
+            top_updates = out.get("top_updates") or {}
+            kids_updates = out.get("kids_updates") or []
+        except Exception as e:
+            print("LLM extract error (using regex fallback):", e)
+
+    # Fallback/Ergänzung via Regex
+    regex_updates = parse_kv_updates(text, types, current_kid_index)
+    for k, v in regex_updates.items():
+        # nur füllen, wenn LLM nichts geliefert hat
         if k.startswith("kid_"):
-            if not st["kids"] or len(st["kids"]) <= current_kid_index:
-                st["kids"].append({})
-            st["kids"][-1][k] = v
+            pass  # unten im Kids-Block
         else:
-            st["fields"][k] = v
+            top_updates.setdefault(k, v)
+
+    # Top-Level Updates mergen (weiterhin validiert)
+    for k, v in (top_updates or {}).items():
+        norm = normalize_value(types.get(k, "string"), v)
+        if norm is not None:
+            st["fields"][k] = norm
             if k in order:
                 st["idx"] = max(st["idx"], order.index(k) + 1)
 
-    # Erstes Feld (Name) direkt konsumieren
+    # Kids-Updates mergen (nur für aktuelles Kind sinnvoll)
+    if current_kid_index is not None:
+        if not st["kids"] or len(st["kids"]) <= current_kid_index:
+            st["kids"].append({})
+        kid = st["kids"][-1]
+
+        # aus LLM
+        for ku in (kids_updates or []):
+            for k, v in ku.items():
+                norm = normalize_value(
+                    {
+                        "kid_name": "string",
+                        "kid_dob": "date",
+                        "kid_taxid": "taxid",
+                        "kid_relation": "enum_relation",
+                        "kid_cohab": "bool",
+                        "kid_status": "enum_kstatus",
+                        "kid_eu_benefit": "bool",
+                    }.get(k, "string"),
+                    v,
+                )
+                if norm is not None:
+                    kid[k] = norm
+
+        # aus Regex
+        for k, v in regex_updates.items():
+            if not k.startswith("kid_"):
+                continue
+            norm = normalize_value(
+                {
+                    "kid_name": "string",
+                    "kid_dob": "date",
+                    "kid_taxid": "taxid",
+                    "kid_relation": "enum_relation",
+                    "kid_cohab": "bool",
+                    "kid_status": "enum_kstatus",
+                    "kid_eu_benefit": "bool",
+                }.get(k, "string"),
+                v,
+            )
+            if norm is not None:
+                kid[k] = norm
+
+    # Erstes Feld (Name) direkt konsumieren, falls noch leer
     if st["idx"] == 0 and "full_name" not in st["fields"]:
         name = (text or "").strip()
-        bad = {"hallo","hi","hey","hello","servus","moin"}
+        bad = {"hallo", "hi", "hey", "hello", "servus", "moin"}
         if name and name.lower() not in bad and len(name.split()) >= 2:
             st["fields"]["full_name"] = name
             st["idx"] = 1
@@ -224,8 +322,16 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
             st["fields"]["kid_count"] = v
             return t(lang, "ask_kid_name", i=1)
 
-        kid_fields = ["kid_name","kid_dob","kid_taxid","kid_relation","kid_cohab","kid_status","kid_eu_benefit"]
-        kid_types  = ["string","date","taxid","enum_relation","bool","enum_kstatus","bool"]
+        kid_fields = [
+            "kid_name",
+            "kid_dob",
+            "kid_taxid",
+            "kid_relation",
+            "kid_cohab",
+            "kid_status",
+            "kid_eu_benefit",
+        ]
+        kid_types = ["string", "date", "taxid", "enum_relation", "bool", "enum_kstatus", "bool"]
 
         while len(st["kids"]) < st["fields"]["kid_count"]:
             # Neues Kind beginnen, wenn noch kein offenes Kind existiert
@@ -238,14 +344,14 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
                 if kf not in kid:
                     val = normalize_value(kt, text or "")
                     if val is None:
-                        return t(lang, "ask_"+kf, i=i)
+                        return t(lang, "ask_" + kf, i=i)
                     kid[kf] = val
                     # nächstes fehlendes Feld oder nächstes Kind
                     for nf in kid_fields:
                         if nf not in kid:
-                            return t(lang, "ask_"+nf, i=i)
+                            return t(lang, "ask_" + nf, i=i)
                     if len(st["kids"]) < st["fields"]["kid_count"]:
-                        return t(lang, "ask_kid_name", i=len(st["kids"])+1)
+                        return t(lang, "ask_kid_name", i=len(st["kids"]) + 1)
 
     # --------- Abschluss: prüfen, lokal "PDF" bauen, senden + Link ----------
     ready, missing = is_complete(st["form"], st["fields"], st.get("kids", []))
@@ -276,7 +382,8 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
         print("Warmup warning:", w)
 
     # 3) Dokument senden; wenn das klemmt, schicken wir den Link im Text
-    from app.providers import send_twilio_document, send_whatsapp_text
+    from app.providers import send_twilio_document
+
     doc_sent = False
     try:
         send_twilio_document(user, url, caption="Kindergeld-Antrag (Entwurf)")
@@ -286,6 +393,9 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
 
     st["phase"] = "done"
     if doc_sent:
-        return f"Top, ich habe deinen Kindergeld-Antrag ausgefüllt und als PDF gesendet.\nFalls der Anhang nicht angezeigt wird, nutze diesen Link: {url}"
+        return (
+            "Top, ich habe deinen Kindergeld-Antrag ausgefüllt und als PDF gesendet.\n"
+            f"Falls der Anhang nicht angezeigt wird, nutze diesen Link: {url}"
+        )
     else:
         return f"Ich habe deinen Kindergeld-Antrag erstellt. Hier ist der Download-Link: {url}"
