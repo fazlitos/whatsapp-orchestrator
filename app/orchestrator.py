@@ -1,29 +1,41 @@
 # app/orchestrator.py
-import json, re, os, httpx
+import os
+import re
+import json
+import uuid
+import httpx
 from pathlib import Path
 from app.validators import normalize_value, is_complete
 
-# --------- State (Demo) ---------
+# ---------- Artefakte (lokal) ----------
+ART_DIR = Path("/tmp/artifacts")
+ART_DIR.mkdir(exist_ok=True)
+
+# ---------- In-Memory State (für Tests) ----------
 STATE = {}
+
 BASE = Path(__file__).resolve().parent
 
 def _load_json(p: Path):
     return json.loads(p.read_text(encoding="utf-8"))
 
-# --------- Locales ---------
+# ---------- Mehrsprachige Prompts ----------
 LOCALES = {
     "de": _load_json(BASE / "locales" / "de.json"),
     "en": _load_json(BASE / "locales" / "en.json"),
     "sq": _load_json(BASE / "locales" / "sq.json"),
 }
 
-# --------- Forms ---------
+def t(lang: str, key: str, **kw):
+    return LOCALES.get(lang, LOCALES["de"]).get(key, key).format(**kw)
+
+# ---------- Formulare ----------
 def load_form(name: str):
     return _load_json(BASE / "forms" / f"{name}.json")
 
 FORMS = {
     "kindergeld": load_form("kindergeld"),
-    # "wohngeld": load_form("wohngeld"),
+    # weitere Formulare später hier registrieren
 }
 
 def ensure_state(user: str):
@@ -37,44 +49,42 @@ def ensure_state(user: str):
     })
     return STATE[user]
 
-def t(lang: str, key: str, **kw):
-    return LOCALES.get(lang, LOCALES["de"]).get(key, key).format(**kw)
-
-# --------- Synonyme für freie Angabe/Korrektur ---------
+# ---------- Synonyme für freie Korrekturen ----------
 TOP_SYNONYMS = {
-    "full_name":    [r"voller\s+name", r"^name$|vor-?\s*und\s*nachname"],
-    "dob":          [r"geburtsdatum|geburtstag|dob"],
-    "addr_street":  [r"adresse|anschrift|straße|strasse|str\."],
-    "addr_plz":     [r"plz|postleitzahl|postal\s*code"],
-    "addr_city":    [r"ort|stadt|city"],
-    "taxid_parent": [r"steuer[-\s]?id|idnr\.?|idnr|steuerid"],
+    "full_name":    [r"voller\s+name", r"^name$", r"vor-?\s*und\s*nachname"],
+    "dob":          [r"geburtsdatum", r"geburtstag", r"dob"],
+    "addr_street":  [r"(?:adresse|anschrift|straße|strasse|str\.)"],
+    "addr_plz":     [r"(?:plz|postleitzahl|postal\s*code)"],
+    "addr_city":    [r"(?:ort|stadt|city)"],
+    "taxid_parent": [r"(?:steuer[-\s]?id|idnr\.?|idnr|steuerid)"],
     "iban":         [r"iban"],
-    "marital":      [r"familienstand|marital"],
-    "citizenship":  [r"staatsangeh(?:ö|oe)rigkeit|citizenship"],
-    "employment":   [r"besch(?:ä|a)ftigung|job|occupation|beruf"],
-    "start_month":  [r"beginn|start(?:monat)?|ab\s+monat|monat"],
-    "kid_count":    [r"kinderanzahl|anzahl\s+kinder|^kinder$"],
-}
-KID_SYNONYMS = {
-    "kid_name":       [r"name(?:\s*kind)?|voller\s+name"],
-    "kid_dob":        [r"geburtsdatum|geburtstag|dob"],
-    "kid_taxid":      [r"steuer[-\s]?id|idnr\.?|idnr|steuerid"],
-    "kid_relation":   [r"verwandtschaft|beziehung|relation"],
-    "kid_cohab":      [r"haushalt|wohnt\s*(?:mit)?|cohab"],
-    "kid_status":     [r"status|schule|ausbildung|studium|arbeitssuchend|unter_6"],
-    "kid_eu_benefit": [r"eu-?leistung|eu\s*benefit|leistungen\s*im\s*ausland"],
+    "marital":      [r"(?:familienstand|marital)"],
+    "citizenship":  [r"(?:staatsangeh(?:ö|oe)rigkeit|citizenship)"],
+    "employment":   [r"(?:besch(?:ä|a)ftigung|job|occupation|beruf)"],
+    "start_month":  [r"(?:beginn|start(?:monat)?|ab\s+monat|monat)"],
+    "kid_count":    [r"(?:kinderanzahl|anzahl\s+kinder|^kinder$)"],
 }
 
+KID_SYNONYMS = {
+    "kid_name":       [r"(?:name(?:\s*kind)?|voller\s+name)"],
+    "kid_dob":        [r"(?:geburtsdatum|geburtstag|dob)"],
+    "kid_taxid":      [r"(?:steuer[-\s]?id|idnr\.?|idnr|steuerid)"],
+    "kid_relation":   [r"(?:verwandtschaft|beziehung|relation)"],
+    "kid_cohab":      [r"(?:haushalt|wohnt\s*(?:mit)?|cohab)"],
+    "kid_status":     [r"(?:status|schule|ausbildung|studium|arbeitssuchend|unter_6)"],
+    "kid_eu_benefit": [r"(?:eu-?leistung|eu\s*benefit|leistungen\s*im\s*ausland)"],
+}
+
+# ---------- Freitext → Updates ----------
 def parse_kv_updates(text: str, form_types: dict, current_kid_index: int | None = None):
     """
     Sucht in freiem Text nach 'Feld: Wert' Mustern und gibt validierte Updates zurück.
-    Robuste Version: ruft group() nur auf, wenn ein Match existiert.
+    Robuste Version (keine .group() Aufrufe ohne Match).
     """
     updates = {}
     s = (text or "")
 
-    def _extract(pattern: str) -> str | None:
-        """Führt eine Regex-Suche sicher aus und gibt den getrimmten Capture-Group-1 String zurück."""
+    def _extract(pattern: str):
         try:
             m = re.search(pattern, s, re.IGNORECASE)
         except re.error as e:
@@ -85,11 +95,11 @@ def parse_kv_updates(text: str, form_types: dict, current_kid_index: int | None 
         raw = (m.group(1) or "").strip()
         return raw or None
 
-    # ---------- Top-Level Felder ----------
+    # Top-Level Felder
     for key, syns in TOP_SYNONYMS.items():
         vtype = form_types.get(key, "string")
         for syn in syns:
-            # kein \b drumherum, weil manche Synonyme ^ / $ enthalten
+            # kein \b, damit ^/$ in Synonymen weiter funktionieren
             pattern = rf"(?:{syn})\s*[:\-]?\s*([^\n;,]+)"
             raw = _extract(pattern)
             if raw is None:
@@ -97,11 +107,10 @@ def parse_kv_updates(text: str, form_types: dict, current_kid_index: int | None 
             val = normalize_value(vtype, raw)
             if val is not None:
                 updates[key] = val
-                break  # dieses Feld ist gesetzt → nächste Keys
+                break
 
-    # „nackte“ Muster (IBAN, PLZ), falls noch nicht gesetzt
+    # "Nackte" Muster (IBAN, PLZ)
     if "iban" not in updates:
-        # Leerzeichen tolerieren, am Ende ohne Leerzeichen speichern
         m = re.search(r"\bDE[0-9 ]{20,}\b", s, re.IGNORECASE)
         if m:
             updates["iban"] = re.sub(r"\s+", "", m.group(0)).upper()
@@ -110,7 +119,7 @@ def parse_kv_updates(text: str, form_types: dict, current_kid_index: int | None 
         if m and normalize_value("plz", m.group(0)):
             updates["addr_plz"] = m.group(0)
 
-    # ---------- Kinder-Felder (für das aktuell zu erfassende Kind) ----------
+    # Kinder-Felder für das aktuell erfasste Kind
     if current_kid_index is not None:
         kid_types = {
             "kid_name":"string","kid_dob":"date","kid_taxid":"taxid",
@@ -149,7 +158,7 @@ def _summary(st):
         lines.append(f"  #{i} {k.get('kid_name','-')} | {k.get('kid_dob','-')} | Steuer-ID: {k.get('kid_taxid','-')}")
     return "\n".join(lines)
 
-# --------- Hauptfunktion ---------
+# ---------- Hauptlogik ----------
 def handle_message(user: str, text: str, lang: str = "de") -> str:
     st = ensure_state(user)
     st["lang"] = lang
@@ -160,20 +169,20 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
     low = (text or "").strip().lower()
 
     # Befehle
-    if low in {"reset","neu","start","neustart"}:
+    if low in {"reset", "neu", "start", "neustart"}:
         STATE[user] = {"form":"kindergeld","fields":{},"kids":[],"phase":"collect","idx":0,"lang":lang}
         return t(lang, "ask_" + order[0])
     if low in {"status","zusammenfassung","summary"}:
         return _summary(st)
 
-    # Freie Korrekturen
+    # Freie Korrekturen / Mehrfachangaben
     current_kid_index = None
     if "kid_count" in st["fields"] and len(st["kids"]) < st["fields"]["kid_count"]:
         current_kid_index = len(st["kids"])
-    updates = parse_kv_updates(text or "", types, current_kid_index)
+    updates = parse_kv_updates(text, types, current_kid_index)
     for k, v in updates.items():
         if k.startswith("kid_"):
-            if len(st["kids"]) == 0 or len(st["kids"]) <= current_kid_index:
+            if not st["kids"] or len(st["kids"]) <= current_kid_index:
                 st["kids"].append({})
             st["kids"][-1][k] = v
         else:
@@ -181,7 +190,7 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
             if k in order:
                 st["idx"] = max(st["idx"], order.index(k) + 1)
 
-    # Erstes Feld (Name) direkt verarbeiten
+    # Erstes Feld (Name) direkt konsumieren
     if st["idx"] == 0 and "full_name" not in st["fields"]:
         name = (text or "").strip()
         bad = {"hallo","hi","hey","hello","servus","moin"}
@@ -191,7 +200,7 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
         else:
             return t(lang, "ask_full_name")
 
-    # Top-Level Felder abarbeiten
+    # Top-Level Felder in Reihenfolge abfragen
     while st["idx"] < len(order):
         field = order[st["idx"]]
         if field not in st["fields"]:
@@ -206,7 +215,7 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
         else:
             st["idx"] += 1
 
-    # Kinder
+    # Kinder-Abschnitt (Kindergeld)
     if st["form"] == "kindergeld":
         if "kid_count" not in st["fields"]:
             v = normalize_value("int", text or "")
@@ -219,23 +228,26 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
         kid_types  = ["string","date","taxid","enum_relation","bool","enum_kstatus","bool"]
 
         while len(st["kids"]) < st["fields"]["kid_count"]:
-            if len(st["kids"]) == 0 or all(k in st["kids"][-1] for k in kid_fields):
+            # Neues Kind beginnen, wenn noch kein offenes Kind existiert
+            if not st["kids"] or all(k in st["kids"][-1] for k in kid_fields):
                 st["kids"].append({})
-            i = len(st["kids"])
+            i = len(st["kids"])  # 1-basiert
             kid = st["kids"][-1]
+
             for kf, kt in zip(kid_fields, kid_types):
                 if kf not in kid:
                     val = normalize_value(kt, text or "")
                     if val is None:
                         return t(lang, "ask_"+kf, i=i)
                     kid[kf] = val
+                    # nächstes fehlendes Feld oder nächstes Kind
                     for nf in kid_fields:
                         if nf not in kid:
                             return t(lang, "ask_"+nf, i=i)
                     if len(st["kids"]) < st["fields"]["kid_count"]:
                         return t(lang, "ask_kid_name", i=len(st["kids"])+1)
 
-        # --------- Abschluss: prüfen, PDF bauen, senden + Link zurückgeben ----------
+    # --------- Abschluss: prüfen, lokal "PDF" bauen, senden + Link ----------
     ready, missing = is_complete(st["form"], st["fields"], st.get("kids", []))
     if not ready:
         return t(lang, "ask_" + missing[0])
@@ -246,36 +258,34 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
 
     payload = {"form": st["form"], "data": {"fields": st["fields"], "kids": st.get("kids", [])}}
 
-    # 1) PDF bauen (nur dieser Schritt darf hart fehlschlagen)
+    # 1) Lokale Datei erzeugen (JSON-Platzhalter als .pdf)
     try:
-        with httpx.Client(timeout=30) as c:
-            res = c.post(f"{base}/make-pdf", json=payload)
-            res.raise_for_status()
-            url = res.json()["url"]
+        fid = f"{st['form']}-{uuid.uuid4().hex}.pdf"
+        path = ART_DIR / fid
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        url = f"{base}/artifact/{fid}"
     except Exception as e:
-        print("PDF build error:", e)
+        print("PDF build error (local):", e)
         return "Ich konnte die Datei gerade nicht erzeugen. Versuch es bitte nochmal oder gib mir kurz Bescheid."
 
-    # 2) Datei „anwärmen“, damit Twilio sie schneller laden kann (Fehler ignorieren)
+    # 2) Warmup (optional)
     try:
-        with httpx.Client(timeout=30) as c:
+        with httpx.Client(timeout=15) as c:
             _ = c.get(url, headers={"Connection": "keep-alive"})
     except Exception as w:
         print("Warmup warning:", w)
 
-    # 3) Anhang senden (Timeouts werden NICHT mehr nach außen gegeben)
+    # 3) Dokument senden; wenn das klemmt, schicken wir den Link im Text
+    from app.providers import send_twilio_document, send_whatsapp_text
     doc_sent = False
     try:
-        from app.providers import send_twilio_document
         send_twilio_document(user, url, caption="Kindergeld-Antrag (Entwurf)")
         doc_sent = True
     except Exception as e:
         print("Doc send failed:", e)
 
     st["phase"] = "done"
-
-    # 4) Immer Text-Antwort zurück – inkl. Link (falls Anhang klemmt, hat der Nutzer den Link)
     if doc_sent:
-        return f"Top, ich habe deinen Kindergeld-Antrag ausgefüllt und als PDF hier im Chat gesendet.\nFalls der Anhang nicht angezeigt wird, nutze diesen Link: {url}"
+        return f"Top, ich habe deinen Kindergeld-Antrag ausgefüllt und als PDF gesendet.\nFalls der Anhang nicht angezeigt wird, nutze diesen Link: {url}"
     else:
         return f"Ich habe deinen Kindergeld-Antrag erstellt. Hier ist der Download-Link: {url}"
