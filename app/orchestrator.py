@@ -66,32 +66,51 @@ KID_SYNONYMS = {
 }
 
 def parse_kv_updates(text: str, form_types: dict, current_kid_index: int | None = None):
+    """
+    Sucht in freiem Text nach 'Feld: Wert' Mustern und gibt validierte Updates zurück.
+    Robuste Version: ruft group() nur auf, wenn ein Match existiert.
+    """
     updates = {}
-    if not text:
-        return updates
+    s = (text or "")
 
-    # Top-Level
+    def _extract(pattern: str) -> str | None:
+        """Führt eine Regex-Suche sicher aus und gibt den getrimmten Capture-Group-1 String zurück."""
+        try:
+            m = re.search(pattern, s, re.IGNORECASE)
+        except re.error as e:
+            print("regex error:", pattern, e)
+            return None
+        if not m:
+            return None
+        raw = (m.group(1) or "").strip()
+        return raw or None
+
+    # ---------- Top-Level Felder ----------
     for key, syns in TOP_SYNONYMS.items():
+        vtype = form_types.get(key, "string")
         for syn in syns:
-            m = re.search(rf"\b{syn}\b\s*[:\-]?\s*([^\n;,]+)", text, re.IGNORECASE)
-            if m:
-                raw = m.group(1).strip()
-                val = normalize_value(form_types.get(key, "string"), raw)
-                if val is not None:
-                    updates[key] = val
-                    break
+            # kein \b drumherum, weil manche Synonyme ^ / $ enthalten
+            pattern = rf"(?:{syn})\s*[:\-]?\s*([^\n;,]+)"
+            raw = _extract(pattern)
+            if raw is None:
+                continue
+            val = normalize_value(vtype, raw)
+            if val is not None:
+                updates[key] = val
+                break  # dieses Feld ist gesetzt → nächste Keys
 
-    # „Nackte“ Muster
+    # „nackte“ Muster (IBAN, PLZ), falls noch nicht gesetzt
     if "iban" not in updates:
-        m = re.search(r"\bDE[0-9 ]{20,}\b", text, re.IGNORECASE)
+        # Leerzeichen tolerieren, am Ende ohne Leerzeichen speichern
+        m = re.search(r"\bDE[0-9 ]{20,}\b", s, re.IGNORECASE)
         if m:
             updates["iban"] = re.sub(r"\s+", "", m.group(0)).upper()
     if "addr_plz" not in updates:
-        m = re.search(r"\b\d{5}\b", text)
+        m = re.search(r"\b\d{5}\b", s)
         if m and normalize_value("plz", m.group(0)):
             updates["addr_plz"] = m.group(0)
 
-    # Aktuelles Kind
+    # ---------- Kinder-Felder (für das aktuell zu erfassende Kind) ----------
     if current_kid_index is not None:
         kid_types = {
             "kid_name":"string","kid_dob":"date","kid_taxid":"taxid",
@@ -99,14 +118,17 @@ def parse_kv_updates(text: str, form_types: dict, current_kid_index: int | None 
             "kid_status":"enum_kstatus","kid_eu_benefit":"bool"
         }
         for key, syns in KID_SYNONYMS.items():
+            vtype = kid_types[key]
             for syn in syns:
-                m = re.search(rf"\b{syn}\b\s*[:\-]?\s*([^\n;,]+)", text, re.IGNORECASE)
-                if m:
-                    raw = m.group(1).strip()
-                    val = normalize_value(kid_types[key], raw)
-                    if val is not None:
-                        updates[key] = val
-                        break
+                pattern = rf"(?:{syn})\s*[:\-]?\s*([^\n;,]+)"
+                raw = _extract(pattern)
+                if raw is None:
+                    continue
+                val = normalize_value(vtype, raw)
+                if val is not None:
+                    updates[key] = val
+                    break
+
     return updates
 
 def _summary(st):
