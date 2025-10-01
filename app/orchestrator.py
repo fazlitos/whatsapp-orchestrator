@@ -213,35 +213,47 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
                     if len(st["kids"]) < st["fields"]["kid_count"]:
                         return t(lang, "ask_kid_name", i=len(st["kids"])+1)
 
-    # Abschlussprüfung
+        # --------- Abschluss: prüfen, PDF bauen, senden + Link zurückgeben ----------
     ready, missing = is_complete(st["form"], st["fields"], st.get("kids", []))
     if not ready:
         return t(lang, "ask_" + missing[0])
 
-    # PDF erzeugen & senden
     base = os.getenv("APP_BASE_URL", "").rstrip("/")
     if not base.startswith("http"):
         base = "https://" + base
+
     payload = {"form": st["form"], "data": {"fields": st["fields"], "kids": st.get("kids", [])}}
 
+    # 1) PDF bauen (nur dieser Schritt darf hart fehlschlagen)
     try:
         with httpx.Client(timeout=30) as c:
-            res = c.post(f"{base}/make-pdf", json=payload); res.raise_for_status()
+            res = c.post(f"{base}/make-pdf", json=payload)
+            res.raise_for_status()
             url = res.json()["url"]
-        # Warmup
-        try:
-            with httpx.Client(timeout=30) as c:
-                _ = c.get(url, headers={"Connection": "keep-alive"})
-        except Exception as w:
-            print("Warmup warning:", w)
-        from app.providers import send_twilio_document, send_whatsapp_text
-        try:
-            send_twilio_document(user, url, caption="Kindergeld-Antrag (Entwurf)")
-        except Exception as e:
-            print("Doc send failed, sending link:", e)
-            send_whatsapp_text(user, f"Hier ist dein PDF: {url}")
-        st["phase"] = "done"
-        return "Top, ich habe deinen Kindergeld-Antrag ausgefüllt und als PDF hier im Chat gesendet."
     except Exception as e:
-        print("PDF/Send error:", e)
-        return "Ich konnte die Datei gerade nicht erzeugen/senden. Versuch es bitte nochmal oder gib mir kurz Bescheid."
+        print("PDF build error:", e)
+        return "Ich konnte die Datei gerade nicht erzeugen. Versuch es bitte nochmal oder gib mir kurz Bescheid."
+
+    # 2) Datei „anwärmen“, damit Twilio sie schneller laden kann (Fehler ignorieren)
+    try:
+        with httpx.Client(timeout=30) as c:
+            _ = c.get(url, headers={"Connection": "keep-alive"})
+    except Exception as w:
+        print("Warmup warning:", w)
+
+    # 3) Anhang senden (Timeouts werden NICHT mehr nach außen gegeben)
+    doc_sent = False
+    try:
+        from app.providers import send_twilio_document
+        send_twilio_document(user, url, caption="Kindergeld-Antrag (Entwurf)")
+        doc_sent = True
+    except Exception as e:
+        print("Doc send failed:", e)
+
+    st["phase"] = "done"
+
+    # 4) Immer Text-Antwort zurück – inkl. Link (falls Anhang klemmt, hat der Nutzer den Link)
+    if doc_sent:
+        return f"Top, ich habe deinen Kindergeld-Antrag ausgefüllt und als PDF hier im Chat gesendet.\nFalls der Anhang nicht angezeigt wird, nutze diesen Link: {url}"
+    else:
+        return f"Ich habe deinen Kindergeld-Antrag erstellt. Hier ist der Download-Link: {url}"
