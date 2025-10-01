@@ -90,4 +90,13 @@ def send_twilio_document(to: str, media_url: str, caption: str = ""):
         print("Twilio doc send exception:", e)
         raise
 
-def send_meta(to:_
+def send_meta(to: str, text: str):
+    """Fallback: Meta Cloud API (nur genutzt, wenn PROVIDER != twilio)."""
+    _meta_send({"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text[:4096]}})
+
+def send_whatsapp_text(to: str, text: str):
+    """Router: nutzt Twilio oder Meta je nach PROVIDER."""
+    provider = (os.getenv("PROVIDER", "meta") or "meta").lower()
+    if provider == "twilio":
+        return send_twilio(to, text)
+    return send_meta(to, text)
