@@ -255,30 +255,43 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
                     if len(st["kids"]) < st["fields"]["kid_count"]:
                         return t(lang, "ask_kid_name", i=len(st["kids"])+1)
 
-    # 4) Abschlussprüfung
-    ready, missing = is_complete(st["form"], st["fields"], st.get("kids", []))
-    if not ready:
-        # frage das erste fehlende Feld
-        return t(lang, "ask_" + missing[0])
+# 4) Abschlussprüfung
+ready, missing = is_complete(st["form"], st["fields"], st.get("kids", []))
+if not ready:
+    return t(lang, "ask_" + missing[0])
 
-    # 5) AUTOMATISCH: PDF erzeugen & per WhatsApp senden
-    base = os.getenv("APP_BASE_URL", "").rstrip("/")
-    if not base.startswith("http"):
-        base = "https://" + base
+# 5) PDF erzeugen
+base = os.getenv("APP_BASE_URL", "").rstrip("/")
+if not base.startswith("http"):
+    base = "https://" + base
 
-    payload = {"form": st["form"], "data": {"fields": st["fields"], "kids": st.get("kids", [])}}
+payload = {"form": st["form"], "data": {"fields": st["fields"], "kids": st.get("kids", [])}}
 
+try:
+    # PDF bauen
+    with httpx.Client(timeout=30) as c:
+        res = c.post(f"{base}/make-pdf", json=payload)
+        res.raise_for_status()
+        url = res.json()["url"]
+
+    # Warm-up: Datei einmal selbst abrufen (hält Render „wach“ & TLS warm)
     try:
         with httpx.Client(timeout=30) as c:
-            res = c.post(f"{base}/make-pdf", json=payload)
-            res.raise_for_status()
-            url = res.json()["url"]
-
-        from app.providers import send_twilio_document
-        send_twilio_document(user, url, caption="Kindergeld-Antrag (Entwurf)")
-
-        st["phase"] = "done"
-        return "Top, ich habe deinen Kindergeld-Antrag ausgefüllt und als PDF hier im Chat gesendet. Du kannst mir jederzeit Korrekturen schicken, z. B. „IBAN: DE…“."
+            _ = c.get(url, headers={"Connection": "keep-alive"})
     except Exception as e:
-        print("PDF/Send error:", e)
-        return "Ich konnte die Datei gerade nicht erzeugen/senden. Versuch es bitte nochmal oder gib mir kurz Bescheid."
+        print("Warmup fetch warning:", e)
+
+    # Dokument senden
+    from app.providers import send_twilio_document, send_whatsapp_text
+    try:
+        send_twilio_document(user, url, caption="Kindergeld-Antrag (Entwurf)")
+    except Exception as e:
+        # Fallback: Link als Text schicken (falls Twilio-Timeout)
+        print("Doc send timeout/failure, sending link as text:", e)
+        send_whatsapp_text(user, f"Hier ist dein PDF: {url}")
+
+    st["phase"] = "done"
+    return "Top, ich habe deinen Kindergeld-Antrag ausgefüllt und als PDF hier im Chat gesendet."
+except Exception as e:
+    print("PDF/Send error:", e)
+    return "Ich konnte die Datei gerade nicht erzeugen/senden. Versuch es bitte nochmal oder gib mir kurz Bescheid."
