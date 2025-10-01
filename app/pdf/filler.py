@@ -1,131 +1,159 @@
-from pypdf import PdfReader, PdfWriter
-from pypdf.generic import NameObject, BooleanObject
-from pathlib import Path
-import json, os, re, tempfile
+# app/pdf/filler.py
+import io
+from typing import List, Dict, Any
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter  # nur Fallback, wir lesen echte Größe aus dem Template
+from PyPDF2 import PdfReader, PdfWriter
 
-ROOT = Path(__file__).resolve().parent
-TEMPLATES = ROOT / "templates"
-MAPPING_DIR = ROOT / "mapping"
-MAPPING_DIR.mkdir(parents=True, exist_ok=True)
-
-def template_path(name="kg1"):
-    return str(TEMPLATES / "kg1-antrag.pdf")
-
-def list_fields(pdf_path: str):
-    reader = PdfReader(pdf_path)
-    fields = reader.get_form_text_fields() or {}
-    # pypdf liefert nur Textfelder; Checkboxes etc. sind nicht immer gelistet.
-    return sorted(fields.keys())
-
-def _split_taxid(taxid: str):
-    # 11 Ziffern -> 4-3-4 (wie im Vordruck segmentiert)
-    digits = re.sub(r"\D","", taxid or "")
-    return [digits[0:4], digits[4:7], digits[7:11], ""] if len(digits) == 11 else ["","","",""]
-
-def _split_name(full: str):
-    full = (full or "").strip()
-    if not full: return {"Vorname":"", "Familienname":""}
-    parts = full.split()
-    return {"Vorname": " ".join(parts[:-1]) or parts[0], "Familienname": parts[-1]}
-
-def load_mapping():
-    p = MAPPING_DIR / "kg1.json"
-    if p.exists():
-        return json.loads(p.read_text(encoding="utf-8"))
-    # erste Vorlage (Passe Feldnamen später nach /pdf/fields an!)
-    mapping = {
-        "person": {
-            "taxid_parts": ["TaxID_T1","TaxID_T2","TaxID_T3","TaxID_T4"],
-            "vorname": "Vorname",
-            "nachname": "Familienname",
-            "geburtsdatum": "Geburtsdatum",
-            "geburtsort": "Geburtsort",
-            "staatsangehoerigkeit": "Staatsangehoerigkeit",
-            "anschrift": "Anschrift"
-        },
-        "bank": {
-            "iban": "IBAN",
-            "kontoinhaber_checkbox": "Konto_Inhaber_Antragsteller"  # Checkbox
-        },
-        "meta": {
-            "anzahl_anlage_kind": "Anzahl_Anlage_Kind"
-        }
-    }
-    p.write_text(json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8")
-    return mapping
-
-def fill_kindergeld(fields: dict, kids: list, out_dir: str = None) -> str:
+# ---------- kleine Zeichen-Primitive ----------
+def _make_overlay(page_sizes: List[tuple], instructions: List[Dict[str, Any]]) -> io.BytesIO:
     """
-    fields: deine gesammelten Top-Level Felder
-    kids:   Liste mit Kinder-Dictionaries (wir tragen vorerst nur die Anzahl ein)
-    returns: Pfad zur erzeugten PDF
+    Baut ein Mehrseiten-Overlay (eine PDF) mit allen Texten.
+    page_sizes: [(w,h), ...] aus dem Template
+    instructions: [{page:int, x:float, y:float, text:str, size:int}, ...]
     """
-    pdf_in = template_path()
-    reader = PdfReader(pdf_in)
-    writer = PdfWriter()
+    buf = io.BytesIO()
+    # Dummy-Startgröße; wechseln wir pro Seite auf echte Größe
+    c = canvas.Canvas(buf, pagesize=page_sizes[0] if page_sizes else letter)
+    # pro Seite zeichnen
+    by_page: Dict[int, List[Dict[str, Any]]] = {}
+    for ins in instructions:
+        by_page.setdefault(ins["page"], []).append(ins)
 
-    # alle Seiten übernehmen
-    for p in reader.pages:
-        writer.add_page(p)
+    for pno, (w, h) in enumerate(page_sizes):
+        c.setPageSize((w, h))
+        c.setFont("Helvetica", 10)
+        for ins in by_page.get(pno, []):
+            size = int(ins.get("size", 10))
+            c.setFont("Helvetica", size)
+            c.drawString(float(ins["x"]), float(ins["y"]), str(ins.get("text", "")))
+        c.showPage()
+    c.save()
+    buf.seek(0)
+    return buf
 
-    # NeedAppearances setzen, damit Viewer die Einträge anzeigen
-    if "/AcroForm" in writer._root_object:
-        writer._root_object["/AcroForm"].update(
-            {NameObject("/NeedAppearances"): BooleanObject(True)}
-        )
-    else:
-        writer._root_object.update({
-            NameObject("/AcroForm"): reader.trailer["/Root"]["/AcroForm"],
-        })
-        writer._root_object["/AcroForm"].update(
-            {NameObject("/NeedAppearances"): BooleanObject(True)}
-        )
+def _merge(template_path: str, overlay_pdf: io.BytesIO) -> bytes:
+    tpl = PdfReader(template_path)
+    ovl = PdfReader(overlay_pdf)
+    out = PdfWriter()
+    for i, page in enumerate(tpl.pages):
+        if i < len(ovl.pages):
+            page.merge_page(ovl.pages[i])
+        out.add_page(page)
+    obuf = io.BytesIO()
+    out.write(obuf)
+    obuf.seek(0)
+    return obuf.read()
 
-    mp = load_mapping()
+# ---------- Debug: Grid über Template legen ----------
+def make_grid(template_path: str) -> bytes:
+    tpl = PdfReader(template_path)
+    page_sizes = []
+    for p in tpl.pages:
+        w = float(p.mediabox.width)
+        h = float(p.mediabox.height)
+        page_sizes.append((w, h))
 
-    # ---- Werte vorbereiten
-    # Name
-    nm = _split_name(fields.get("full_name",""))
-    # Tax-ID
-    t1,t2,t3,t4 = _split_taxid(fields.get("taxid_parent",""))
-    # Adresse als ein Feld (falls Formular Einzelfelder hat, bitte in mapping aufsplitten)
-    anschrift = f"{fields.get('addr_street','')}, {fields.get('addr_plz','')} {fields.get('addr_city','')}"
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=page_sizes[0])
+    for pno, (w, h) in enumerate(page_sizes):
+        c.setPageSize((w, h))
+        # vertikal (x)
+        step = 20
+        c.setFont("Helvetica", 6)
+        for x in range(0, int(w), step):
+            c.setStrokeColorRGB(0.85, 0.85, 0.85)
+            c.line(x, 0, x, h)
+            c.drawString(x + 1, h - 10, str(x))
+        # horizontal (y)
+        for y in range(0, int(h), step):
+            c.line(0, y, w, y)
+            c.drawString(2, y + 2, str(y))
+        c.setFont("Helvetica", 10)
+        c.setStrokeColorRGB(1, 0, 0)
+        c.drawString(20, h - 20, f"Seite {pno+1} – Koordinatennetz (0,0 unten links, Einheiten: pt)")
+        c.showPage()
+    c.save()
+    buf.seek(0)
+    # überlagern
+    return _merge(template_path, buf)
 
-    values = {
-        mp["person"]["vorname"]: nm["Vorname"],
-        mp["person"]["nachname"]: nm["Familienname"],
-        mp["person"]["geburtsdatum"]: fields.get("dob",""),
-        mp["person"]["geburtsort"]: fields.get("birthplace",""),
-        mp["person"]["staatsangehoerigkeit"]: fields.get("citizenship",""),
-        mp["person"]["anschrift"]: anschrift,
-        mp["bank"]["iban"]: fields.get("iban",""),
-        mp["meta"]["anzahl_anlage_kind"]: str(fields.get("kid_count", len(kids) or "")),
-    }
+# ---------- Mapping & Fülllogik Kindergeld ----------
+# HINWEIS: Koordinaten sind Platzhalter (A4 ~ 595 x 842 pt).
+# Nutze /pdf/debug/kg1, um exakte Positionen zu finden und passe die Werte unten an.
+KG1_MAP = {
+    # page, x, y, fontsize
+    "full_name":     {"page": 0, "x": 90,  "y": 770, "size": 11},
+    "dob":           {"page": 0, "x": 420, "y": 770, "size": 11},
+    "addr_street":   {"page": 0, "x": 90,  "y": 746, "size": 11},
+    "addr_plz":      {"page": 0, "x": 420, "y": 746, "size": 11},
+    "addr_city":     {"page": 0, "x": 470, "y": 746, "size": 11},
+    "taxid_parent":  {"page": 0, "x": 90,  "y": 722, "size": 11},
+    "iban":          {"page": 0, "x": 90,  "y": 698, "size": 11},
+    "marital":       {"page": 0, "x": 420, "y": 722, "size": 11},
+    "citizenship":   {"page": 0, "x": 420, "y": 698, "size": 11},
+    "employment":    {"page": 0, "x": 90,  "y": 674, "size": 11},
+    "start_month":   {"page": 0, "x": 420, "y": 674, "size": 11},
 
-    tax_targets = mp["person"]["taxid_parts"]
-    for part, val in zip(tax_targets, [t1,t2,t3,t4]):
-        if part: values[part] = val
+    # erstes Kind (nur als Beispiel – echte Positionen via Grid kalibrieren)
+    "kid_name_1":    {"page": 0, "x": 90,  "y": 630, "size": 11},
+    "kid_dob_1":     {"page": 0, "x": 420, "y": 630, "size": 11},
+    "kid_taxid_1":   {"page": 0, "x": 90,  "y": 606, "size": 11},
+    "kid_relation_1":{"page": 0, "x": 420, "y": 606, "size": 11},
+}
 
-    # ---- Felder auf jeder Seite aktualisieren
-    for page in writer.pages:
-        try:
-            writer.update_page_form_field_values(page, values)
-        except Exception:
-            pass
+def _fmt_date(d: str) -> str:
+    # erwartet TT.MM.JJJJ; einfache Absicherung
+    if not d:
+        return ""
+    d = str(d).replace("-", ".")
+    return d
 
-    # (Optional) Checkbox „Kontoinhaber ist Antragsteller“ setzen
-    # Manche PDFs erwarten '/Yes' oder '/On'; pypdf setzt Textfelder leichter als Checkboxen.
-    # Wenn dein Feldname korrekt ist, reicht oft "Yes".
-    try:
-        writer.update_page_form_field_values(writer.pages[0], {mp["bank"]["kontoinhaber_checkbox"]: "Yes"})
-    except Exception:
-        pass
+def fill_kindergeld(template_path: str, out_path: str, data: Dict[str, Any]) -> None:
+    """
+    data = {"fields": {...}, "kids": [{...}, ...]}
+    schreibt die ausgefüllte PDF an out_path.
+    """
+    # 1) Seitengrößen lesen
+    tpl = PdfReader(template_path)
+    page_sizes = []
+    for p in tpl.pages:
+        page_sizes.append((float(p.mediabox.width), float(p.mediabox.height)))
 
-    # Ausgabe
-    if not out_dir:
-        out_dir = tempfile.gettempdir()
-    Path(out_dir).mkdir(parents=True, exist_ok=True)
-    out_path = str(Path(out_dir) / f"kg1-{os.urandom(6).hex()}.pdf")
-    with open(out_path, "wb") as fp:
-        writer.write(fp)
-    return out_path
+    # 2) Instruktionen zusammenstellen
+    f = data.get("fields", {})
+    kids = data.get("kids", []) or []
+    instr: List[Dict[str, Any]] = []
+
+    def put(key, text):
+        m = KG1_MAP.get(key)
+        if not m:
+            return
+        instr.append({"page": m["page"], "x": m["x"], "y": m["y"], "text": str(text or ""), "size": m.get("size", 10)})
+
+    put("full_name", f.get("full_name"))
+    put("dob", _fmt_date(f.get("dob")))
+    put("addr_street", f.get("addr_street"))
+    put("addr_plz", f.get("addr_plz"))
+    put("addr_city", f.get("addr_city"))
+    put("taxid_parent", f.get("taxid_parent"))
+    put("iban", f.get("iban"))
+    put("marital", f.get("marital"))
+    put("citizenship", f.get("citizenship"))
+    put("employment", f.get("employment"))
+    put("start_month", f.get("start_month"))
+
+    if len(kids) >= 1:
+        k = kids[0]
+        put("kid_name_1", k.get("kid_name"))
+        put("kid_dob_1", _fmt_date(k.get("kid_dob")))
+        put("kid_taxid_1", k.get("kid_taxid"))
+        put("kid_relation_1", k.get("kid_relation"))
+
+    # 3) Overlay bauen & mergen
+    overlay = _make_overlay(page_sizes, instr)
+    pdf_bytes = _merge(template_path, overlay)
+
+    # 4) schreiben
+    with open(out_path, "wb") as f_out:
+        f_out.write(pdf_bytes)
