@@ -1,56 +1,54 @@
 # app/providers.py
-import os, httpx
+import os, httpx, time
 from twilio.rest import Client
+from twilio.base.exceptions import TwilioRestException
+from twilio.http.http_client import TwilioHttpClient
 
-def send_twilio(to: str, text: str):
-    """Text über Twilio-WhatsApp senden."""
+def _twilio_client():
     acc = os.getenv("TWILIO_ACCOUNT_SID")
     tok = os.getenv("TWILIO_AUTH_TOKEN")
-    from_ = os.getenv("TWILIO_FROM")
+    timeout = int(os.getenv("TWILIO_HTTP_TIMEOUT", "30"))  # sek
+    http_client = TwilioHttpClient(timeout=timeout)
+    return Client(acc, tok, http_client=http_client)
+
+def send_twilio(to: str, text: str):
+    acc, tok, from_ = os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"), os.getenv("TWILIO_FROM")
     if not (acc and tok and from_):
         print("WARN: Twilio ENV fehlt – keine Nachricht gesendet.")
         return
-    Client(acc, tok).messages.create(
-        from_=f"whatsapp:{from_}",
-        to=f"whatsapp:{to}",
-        body=text[:1600]
-    )
+    try:
+        _twilio_client().messages.create(
+            from_=f"whatsapp:{from_}",
+            to=f"whatsapp:{to}",
+            body=text[:1600]
+        )
+    except TwilioRestException as e:
+        print("Twilio text send error:", e)
+        raise
+    except Exception as e:
+        print("Twilio text send exception:", e)
+        raise
 
 def send_twilio_document(to: str, media_url: str, caption: str = ""):
-    """Dokument (PDF-URL) über Twilio-WhatsApp senden."""
-    acc = os.getenv("TWILIO_ACCOUNT_SID")
-    tok = os.getenv("TWILIO_AUTH_TOKEN")
-    from_ = os.getenv("TWILIO_FROM")
+    acc, tok, from_ = os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"), os.getenv("TWILIO_FROM")
     if not (acc and tok and from_):
         print("WARN: Twilio ENV fehlt – kein Dokumentversand.")
         return
-    Client(acc, tok).messages.create(
-        from_=f"whatsapp:{from_}",
-        to=f"whatsapp:{to}",
-        body=caption[:1024] if caption else None,
-        media_url=[media_url]
-    )
+    try:
+        _twilio_client().messages.create(
+            from_=f"whatsapp:{from_}",
+            to=f"whatsapp:{to}",
+            body=caption[:1024] if caption else None,
+            media_url=[media_url]
+        )
+    except TwilioRestException as e:
+        print("Twilio doc send error:", e)
+        raise
+    except Exception as e:
+        print("Twilio doc send exception:", e)
+        raise
 
 def send_meta(to: str, text: str):
-    """Fallback: Meta Cloud API (nur nutzen, wenn PROVIDER!=twilio)."""
-    token = os.getenv("WHATSAPP_TOKEN", "")
-    phone_id = os.getenv("WHATSAPP_PHONE_ID", "")
+    token, phone_id = os.getenv("WHATSAPP_TOKEN", ""), os.getenv("WHATSAPP_PHONE_ID", "")
     if not (token and phone_id):
-        print("WARN: Meta ENV fehlt – keine Nachricht gesendet.")
-        return
-    url = f"https://graph.facebook.com/v21.0/{phone_id}/messages"
-    headers = {"Authorization": f"Bearer {token}"}
-    data = {"messaging_product":"whatsapp","to":to,"type":"text","text":{"body":text[:4096]}}
-    with httpx.Client(timeout=10) as c:
-        r = c.post(url, headers=headers, json=data)
-        try:
-            r.raise_for_status()
-        except Exception as e:
-            print("Meta send error:", e, r.text)
-
-def send_whatsapp_text(to: str, text: str):
-    """Router: Nutzt Twilio oder Meta je nach PROVIDER."""
-    provider = (os.getenv("PROVIDER","meta") or "meta").lower()
-    if provider == "twilio":
-        return send_twilio(to, text)
-    return send_meta(to, text)
+        print("WARN: Meta ENV fehlt – keine Nachrich
