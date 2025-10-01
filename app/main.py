@@ -53,6 +53,66 @@ async def webhook(req: Request):
         log.exception(f"meta webhook parse error: {e}")
     return {"status": "ok"}
 
+# ====== PDF Debug Helpers ======
+from fastapi.responses import JSONResponse, PlainTextResponse, FileResponse
+from pathlib import Path
+import os, uuid, logging
+from PyPDF2 import PdfReader
+
+log = logging.getLogger("uvicorn")
+
+TEMPLATE_DIR = Path("app/pdf/templates")
+TEMPLATE_KG1 = str(TEMPLATE_DIR / "kg1.pdf")
+
+ART_DIR = Path("/tmp/artifacts")
+ART_DIR.mkdir(exist_ok=True)
+
+@app.get("/pdf/debug/list")
+def pdf_debug_list():
+    try:
+        if not TEMPLATE_DIR.exists():
+            return JSONResponse({"ok": False, "msg": f"Template dir not found: {TEMPLATE_DIR.as_posix()}"}, 404)
+        files = []
+        for p in TEMPLATE_DIR.iterdir():
+            if p.is_file():
+                files.append({"name": p.name, "size": p.stat().st_size})
+        return {"ok": True, "dir": TEMPLATE_DIR.as_posix(), "files": files}
+    except Exception as e:
+        log.exception("debug list error")
+        return JSONResponse({"ok": False, "error": str(e)}, 500)
+
+@app.get("/pdf/debug/info")
+def pdf_debug_info():
+    try:
+        if not os.path.exists(TEMPLATE_KG1):
+            return PlainTextResponse(f"Template not found: {TEMPLATE_KG1}", status_code=404)
+        r = PdfReader(TEMPLATE_KG1)
+        info = {
+            "encrypted": getattr(r, "is_encrypted", False),
+            "pages": len(r.pages),
+            "sizes": [{"w": float(p.mediabox.width), "h": float(p.mediabox.height)} for p in r.pages],
+        }
+        return info
+    except Exception as e:
+        log.exception("debug info error")
+        return PlainTextResponse(f"pdf_debug_info error: {e}", status_code=500)
+
+@app.get("/pdf/debug/kg1")
+def pdf_debug_grid():
+    try:
+        if not os.path.exists(TEMPLATE_KG1):
+            return PlainTextResponse(f"Template not found: {TEMPLATE_KG1}\nTipp: /pdf/debug/list prüfen.", 404)
+        # das Grid erzeugen
+        from app.pdf.filler import make_grid
+        out_bytes = make_grid(TEMPLATE_KG1)
+        tmp = ART_DIR / f"kg1-grid-{uuid.uuid4().hex}.pdf"
+        tmp.write_bytes(out_bytes)
+        return FileResponse(tmp, media_type="application/pdf", filename=tmp.name)
+    except Exception as e:
+        log.exception("debug kg1 error")
+        return PlainTextResponse(f"pdf_debug_grid error: {e}", status_code=500)
+
+
 # ---------- Twilio WhatsApp Webhook ----------
 @app.post("/webhook/twilio")
 async def webhook_twilio(From: str = Form(...), Body: str = Form(...)):
