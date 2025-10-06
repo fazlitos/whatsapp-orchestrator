@@ -15,14 +15,18 @@ ART_DIR.mkdir(exist_ok=True)
 
 TEMPLATE_KG1 = "app/pdf/templates/kg1.pdf"  # Pfad zum Formular-Template
 
-# ---------- Health ----------
 @app.get("/health")
 def health():
     from app.state_manager import state_manager
+    from app.storage import health_check as r2_health_check
+    
     redis_health = state_manager.health()
+    r2_health = r2_health_check()
+    
     return {
         "ok": True,
-        "redis": redis_health
+        "redis": redis_health,
+        "r2": r2_health
     }
 
 # ---------- Meta Webhook (optional) ----------
