@@ -373,14 +373,22 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
 
     payload = {"form": st["form"], "data": {"fields": st["fields"], "kids": st.get("kids", [])}}
 
-    # 1) Lokale Datei erzeugen (JSON-Platzhalter als .pdf)
+# 1) PDF erzeugen und zu R2 hochladen
     try:
+        from app.storage import upload_pdf_with_fallback
+        
+        # Aktuell: JSON als Platzhalter (später echte PDF-Generierung)
+        pdf_content = json.dumps(payload, ensure_ascii=False, indent=2).encode('utf-8')
         fid = f"{st['form']}-{uuid.uuid4().hex}.pdf"
-        path = ART_DIR / fid
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        url = f"{base}/artifact/{fid}"
+        
+        # Upload zu R2 (mit lokalem Fallback)
+        success, url = upload_pdf_with_fallback(pdf_content, fid)
+        
+        if not success:
+            return save_and_return("Ich konnte die Datei gerade nicht hochladen. Versuch es bitte nochmal.")
+            
     except Exception as e:
-        print("PDF build error (local):", e)
+        print("PDF build error:", e)
         return save_and_return("Ich konnte die Datei gerade nicht erzeugen. Versuch es bitte nochmal oder gib mir kurz Bescheid.")
 
     # 2) Warmup (optional)
