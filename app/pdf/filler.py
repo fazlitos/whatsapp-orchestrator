@@ -2,10 +2,10 @@
 import io
 from typing import List, Dict, Any
 from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import letter  # nur Fallback, wir lesen echte Größe aus dem Template
+from reportlab.lib.pagesizes import letter
 from PyPDF2 import PdfReader, PdfWriter
 
-# ---------- kleine Zeichen-Primitive ----------
+# ---------- Kleine Zeichen-Primitive ----------
 def _make_overlay(page_sizes: List[tuple], instructions: List[Dict[str, Any]]) -> io.BytesIO:
     """
     Baut ein Mehrseiten-Overlay (eine PDF) mit allen Texten.
@@ -13,9 +13,9 @@ def _make_overlay(page_sizes: List[tuple], instructions: List[Dict[str, Any]]) -
     instructions: [{page:int, x:float, y:float, text:str, size:int}, ...]
     """
     buf = io.BytesIO()
-    # Dummy-Startgröße; wechseln wir pro Seite auf echte Größe
     c = canvas.Canvas(buf, pagesize=page_sizes[0] if page_sizes else letter)
-    # pro Seite zeichnen
+    
+    # Pro Seite zeichnen
     by_page: Dict[int, List[Dict[str, Any]]] = {}
     for ins in instructions:
         by_page.setdefault(ins["page"], []).append(ins)
@@ -58,14 +58,12 @@ def make_grid(template_path: str) -> bytes:
     c = canvas.Canvas(buf, pagesize=page_sizes[0])
     for pno, (w, h) in enumerate(page_sizes):
         c.setPageSize((w, h))
-        # vertikal (x)
         step = 20
         c.setFont("Helvetica", 6)
         for x in range(0, int(w), step):
             c.setStrokeColorRGB(0.85, 0.85, 0.85)
             c.line(x, 0, x, h)
             c.drawString(x + 1, h - 10, str(x))
-        # horizontal (y)
         for y in range(0, int(h), step):
             c.line(0, y, w, y)
             c.drawString(2, y + 2, str(y))
@@ -75,39 +73,44 @@ def make_grid(template_path: str) -> bytes:
         c.showPage()
     c.save()
     buf.seek(0)
-    # überlagern
     return _merge(template_path, buf)
 
 # ---------- Mapping & Fülllogik Kindergeld ----------
-# HINWEIS: Koordinaten sind Platzhalter (A4 ~ 595 x 842 pt).
-# Nutze /pdf/debug/kg1, um exakte Positionen zu finden und passe die Werte unten an.
+# Koordinaten basierend auf Grid-PDF (gemessen)
 KG1_MAP = {
-    # page, x, y, fontsize
-    "full_name":     {"page": 0, "x": 90,  "y": 770, "size": 11},
-    "dob":           {"page": 0, "x": 420, "y": 770, "size": 11},
-    "addr_street":   {"page": 0, "x": 90,  "y": 746, "size": 11},
-    "addr_plz":      {"page": 0, "x": 420, "y": 746, "size": 11},
-    "addr_city":     {"page": 0, "x": 470, "y": 746, "size": 11},
-    "taxid_parent":  {"page": 0, "x": 90,  "y": 722, "size": 11},
-    "iban":          {"page": 0, "x": 90,  "y": 698, "size": 11},
-    "marital":       {"page": 0, "x": 420, "y": 722, "size": 11},
-    "citizenship":   {"page": 0, "x": 420, "y": 698, "size": 11},
-    "employment":    {"page": 0, "x": 90,  "y": 674, "size": 11},
-    "start_month":   {"page": 0, "x": 420, "y": 674, "size": 11},
-
-    # erstes Kind (nur als Beispiel – echte Positionen via Grid kalibrieren)
-    "kid_name_1":    {"page": 0, "x": 90,  "y": 630, "size": 11},
-    "kid_dob_1":     {"page": 0, "x": 420, "y": 630, "size": 11},
-    "kid_taxid_1":   {"page": 0, "x": 90,  "y": 606, "size": 11},
-    "kid_relation_1":{"page": 0, "x": 420, "y": 606, "size": 11},
+    # Seite 2 (page: 1) - Antragsteller
+    "full_name":     {"page": 1, "x": 320, "y": 548, "size": 10},  # Familienname
+    "vorname":       {"page": 1, "x": 320, "y": 604, "size": 10},  # Vorname (falls separiert)
+    "dob":           {"page": 1, "x": 320, "y": 661, "size": 10},  # Geburtsdatum
+    "geburtsort":    {"page": 1, "x": 545, "y": 661, "size": 10},  # Geburtsort
+    "addr_street":   {"page": 1, "x": 320, "y": 757, "size": 10},  # Anschrift
+    "marital":       {"page": 1, "x": 475, "y": 390, "size": 10},  # Familienstand (Checkbox-Bereich)
+    "taxid_parent":  {"page": 1, "x": 520, "y": 320, "size": 10},  # Steuer-ID (falls separates Feld)
+    "iban":          {"page": 1, "x": 475, "y": 125, "size": 10},  # IBAN
+    "bic":           {"page": 1, "x": 475, "y": 90,  "size": 10},  # BIC
+    
+    # Seite 3 (page: 2) - Kind 1
+    "kid_name_1":    {"page": 2, "x": 75,  "y": 715, "size": 10},  # Vorname Kind
+    "kid_fname_1":   {"page": 2, "x": 480, "y": 715, "size": 10},  # Familienname Kind
+    "kid_dob_1":     {"page": 2, "x": 220, "y": 715, "size": 10},  # Geburtsdatum Kind
+    "kid_geschl_1":  {"page": 2, "x": 315, "y": 715, "size": 10},  # Geschlecht Kind
 }
 
 def _fmt_date(d: str) -> str:
-    # erwartet TT.MM.JJJJ; einfache Absicherung
+    """Erwartet TT.MM.JJJJ; einfache Absicherung."""
     if not d:
         return ""
     d = str(d).replace("-", ".")
     return d
+
+def _split_name(full_name: str) -> tuple:
+    """Teilt 'Vorname Nachname' auf."""
+    parts = full_name.strip().split()
+    if len(parts) >= 2:
+        vorname = parts[0]
+        nachname = " ".join(parts[1:])
+        return vorname, nachname
+    return full_name, ""
 
 def fill_kindergeld(template_path: str, out_path: str, data: Dict[str, Any]) -> None:
     """
@@ -129,31 +132,40 @@ def fill_kindergeld(template_path: str, out_path: str, data: Dict[str, Any]) -> 
         m = KG1_MAP.get(key)
         if not m:
             return
-        instr.append({"page": m["page"], "x": m["x"], "y": m["y"], "text": str(text or ""), "size": m.get("size", 10)})
+        instr.append({
+            "page": m["page"], 
+            "x": m["x"], 
+            "y": m["y"], 
+            "text": str(text or ""), 
+            "size": m.get("size", 10)
+        })
 
-    put("full_name", f.get("full_name"))
+    # Name aufteilen
+    full_name = f.get("full_name", "")
+    vorname, nachname = _split_name(full_name)
+    
+    put("full_name", nachname)  # Familienname
+    put("vorname", vorname)     # Vorname
     put("dob", _fmt_date(f.get("dob")))
     put("addr_street", f.get("addr_street"))
-    put("addr_plz", f.get("addr_plz"))
-    put("addr_city", f.get("addr_city"))
     put("taxid_parent", f.get("taxid_parent"))
     put("iban", f.get("iban"))
     put("marital", f.get("marital"))
-    put("citizenship", f.get("citizenship"))
-    put("employment", f.get("employment"))
-    put("start_month", f.get("start_month"))
 
+    # Kind 1
     if len(kids) >= 1:
         k = kids[0]
-        put("kid_name_1", k.get("kid_name"))
+        kid_full_name = k.get("kid_name", "")
+        kid_vorname, kid_nachname = _split_name(kid_full_name)
+        
+        put("kid_name_1", kid_vorname)
+        put("kid_fname_1", kid_nachname)
         put("kid_dob_1", _fmt_date(k.get("kid_dob")))
-        put("kid_taxid_1", k.get("kid_taxid"))
-        put("kid_relation_1", k.get("kid_relation"))
 
     # 3) Overlay bauen & mergen
     overlay = _make_overlay(page_sizes, instr)
     pdf_bytes = _merge(template_path, overlay)
 
-    # 4) schreiben
+    # 4) Schreiben
     with open(out_path, "wb") as f_out:
         f_out.write(pdf_bytes)
