@@ -18,7 +18,12 @@ TEMPLATE_KG1 = "app/pdf/templates/kg1.pdf"  # Pfad zum Formular-Template
 # ---------- Health ----------
 @app.get("/health")
 def health():
-    return {"ok": True}
+    from app.state_manager import state_manager
+    redis_health = state_manager.health()
+    return {
+        "ok": True,
+        "redis": redis_health
+    }
 
 # ---------- Meta Webhook (optional) ----------
 @app.get("/webhook")
@@ -136,6 +141,42 @@ async def webhook_twilio(From: str = Form(...), Body: str = Form(...)):
 @app.post("/webhook/twilio/")
 async def webhook_twilio_trailing(From: str = Form(...), Body: str = Form(...)):
     return await webhook_twilio(From, Body)
+
+# ---------- Session Management (NEU) ----------
+@app.get("/sessions/active")
+def sessions_active():
+    """Zeigt aktive Sessions (für Monitoring)."""
+    from app.state_manager import state_manager
+    try:
+        if state_manager.redis:
+            keys = state_manager.redis.keys("session:*")
+            return {"total": len(keys), "sessions": [k.replace("session:", "")[-4:] for k in keys[:10]]}
+        return {"total": len(state_manager.fallback), "sessions": list(state_manager.fallback.keys())[:10]}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/sessions/{user_id}")
+def session_info(user_id: str):
+    """Zeigt Session-Info (anonymisiert)."""
+    from app.state_manager import state_manager
+    state = state_manager.get(user_id)
+    if not state:
+        return {"error": "Session not found"}
+    return {
+        "user": user_id[-4:],
+        "phase": state.get("phase"),
+        "form": state.get("form"),
+        "fields_count": len(state.get("fields", {})),
+        "kids_count": len(state.get("kids", [])),
+        "updated": state.get("_updated")
+    }
+
+@app.delete("/sessions/{user_id}")
+def session_delete(user_id: str):
+    """Löscht Session manuell (Support)."""
+    from app.state_manager import state_manager
+    success = state_manager.delete(user_id)
+    return {"deleted": success}
 
 def detect_lang(text: str) -> str:
     low = (text or "").lower()
