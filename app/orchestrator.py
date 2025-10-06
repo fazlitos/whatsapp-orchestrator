@@ -7,6 +7,7 @@ import httpx
 from pathlib import Path
 
 from app.validators import normalize_value, is_complete
+from app.state_manager import state_manager
 
 # Optional: LLM-Extraktor (wenn kein Key vorhanden, fällt Code unten automatisch zurück)
 try:
@@ -18,41 +19,6 @@ except Exception:
 # ---------- Artefakte (lokal) ----------
 ART_DIR = Path("/tmp/artifacts")
 ART_DIR.mkdir(exist_ok=True)
-
-# ---------- Redis State Management ----------
-from app.state_manager import state_manager
-
-# Backward-kompatible Wrapper
-class StateDict:
-    """Wrapper um STATE-Dict Syntax beizubehalten."""
-    def get(self, user, default=None):
-        state = state_manager.get(user)
-        return state if state else default
-    
-    def __getitem__(self, user):
-        return state_manager.get(user) or self._default_state()
-    
-    def __setitem__(self, user, state):
-        state_manager.set(user, state)
-    
-    def setdefault(self, user, default):
-        existing = state_manager.get(user)
-        if existing:
-            return existing
-        state_manager.set(user, default)
-        return default
-    
-    def _default_state(self):
-        return {
-            "form": "kindergeld",
-            "fields": {},
-            "kids": [],
-            "phase": "collect",
-            "idx": 0,
-            "lang": "de",
-        }
-
-STATE = StateDict()
 
 BASE = Path(__file__).resolve().parent
 
@@ -85,18 +51,22 @@ FORMS = {
 
 
 def ensure_state(user: str):
-    STATE.setdefault(
-        user,
-        {
-            "form": "kindergeld",
-            "fields": {},
-            "kids": [],
-            "phase": "collect",
-            "idx": 0,
-            "lang": "de",
-        },
-    )
-    return STATE[user]
+    """Lädt State aus Redis oder erstellt neuen."""
+    existing = state_manager.get(user)
+    if existing:
+        return existing
+    
+    # Neuer State
+    new_state = {
+        "form": "kindergeld",
+        "fields": {},
+        "kids": [],
+        "phase": "collect",
+        "idx": 0,
+        "lang": "de",
+    }
+    state_manager.set(user, new_state)
+    return new_state
 
 
 # ---------- Synonyme für Regex-Fallback ----------
@@ -215,6 +185,12 @@ def _summary(st):
 def handle_message(user: str, text: str, lang: str = "de") -> str:
     st = ensure_state(user)
     st["lang"] = lang
+    
+    # Helper: State speichern und zurückgeben
+    def save_and_return(msg):
+        state_manager.set(user, st)
+        return msg
+    
     form = FORMS.get(st["form"], FORMS["kindergeld"])
     order = form["order"]
     types = form["types"]
@@ -223,7 +199,7 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
 
     # Befehle
     if low in {"reset", "neu", "start", "neustart"}:
-        STATE[user] = {
+        new_state = {
             "form": "kindergeld",
             "fields": {},
             "kids": [],
@@ -231,10 +207,11 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
             "idx": 0,
             "lang": lang,
         }
+        state_manager.set(user, new_state)
         return t(lang, "ask_" + order[0])
 
     if low in {"status", "zusammenfassung", "summary"}:
-        return _summary(st)
+        return save_and_return(_summary(st))
 
     # --- LLM-Extraktion (mit Fallback auf Regex) ---
     current_kid_index = None
@@ -328,7 +305,7 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
             st["fields"]["full_name"] = name
             st["idx"] = 1
         else:
-            return t(lang, "ask_full_name")
+            return save_and_return(t(lang, "ask_full_name"))
 
     # Top-Level Felder in Reihenfolge abfragen
     while st["idx"] < len(order):
@@ -337,11 +314,11 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
             ftype = types.get(field, "string")
             val = normalize_value(ftype, text or "")
             if val is None:
-                return t(lang, "ask_" + field)
+                return save_and_return(t(lang, "ask_" + field))
             st["fields"][field] = val
             st["idx"] += 1
             if st["idx"] < len(order):
-                return t(lang, "ask_" + order[st["idx"]])
+                return save_and_return(t(lang, "ask_" + order[st["idx"]]))
         else:
             st["idx"] += 1
 
@@ -350,9 +327,9 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
         if "kid_count" not in st["fields"]:
             v = normalize_value("int", text or "")
             if v is None:
-                return t(lang, "ask_kid_count")
+                return save_and_return(t(lang, "ask_kid_count"))
             st["fields"]["kid_count"] = v
-            return t(lang, "ask_kid_name", i=1)
+            return save_and_return(t(lang, "ask_kid_name", i=1))
 
         kid_fields = [
             "kid_name",
@@ -376,19 +353,19 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
                 if kf not in kid:
                     val = normalize_value(kt, text or "")
                     if val is None:
-                        return t(lang, "ask_" + kf, i=i)
+                        return save_and_return(t(lang, "ask_" + kf, i=i))
                     kid[kf] = val
                     # nächstes fehlendes Feld oder nächstes Kind
                     for nf in kid_fields:
                         if nf not in kid:
-                            return t(lang, "ask_" + nf, i=i)
+                            return save_and_return(t(lang, "ask_" + nf, i=i))
                     if len(st["kids"]) < st["fields"]["kid_count"]:
-                        return t(lang, "ask_kid_name", i=len(st["kids"]) + 1)
+                        return save_and_return(t(lang, "ask_kid_name", i=len(st["kids"]) + 1))
 
     # --------- Abschluss: prüfen, lokal "PDF" bauen, senden + Link ----------
     ready, missing = is_complete(st["form"], st["fields"], st.get("kids", []))
     if not ready:
-        return t(lang, "ask_" + missing[0])
+        return save_and_return(t(lang, "ask_" + missing[0]))
 
     base = os.getenv("APP_BASE_URL", "").rstrip("/")
     if not base.startswith("http"):
@@ -404,7 +381,7 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
         url = f"{base}/artifact/{fid}"
     except Exception as e:
         print("PDF build error (local):", e)
-        return "Ich konnte die Datei gerade nicht erzeugen. Versuch es bitte nochmal oder gib mir kurz Bescheid."
+        return save_and_return("Ich konnte die Datei gerade nicht erzeugen. Versuch es bitte nochmal oder gib mir kurz Bescheid.")
 
     # 2) Warmup (optional)
     try:
@@ -424,10 +401,11 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
         print("Doc send failed:", e)
 
     st["phase"] = "done"
+    
     if doc_sent:
-        return (
+        return save_and_return(
             "Top, ich habe deinen Kindergeld-Antrag ausgefüllt und als PDF gesendet.\n"
             f"Falls der Anhang nicht angezeigt wird, nutze diesen Link: {url}"
         )
     else:
-        return f"Ich habe deinen Kindergeld-Antrag erstellt. Hier ist der Download-Link: {url}"
+        return save_and_return(f"Ich habe deinen Kindergeld-Antrag erstellt. Hier ist der Download-Link: {url}")
