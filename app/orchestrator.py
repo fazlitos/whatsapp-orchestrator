@@ -373,16 +373,28 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
 
     payload = {"form": st["form"], "data": {"fields": st["fields"], "kids": st.get("kids", [])}}
 
-# 1) PDF erzeugen und zu R2 hochladen
+ # 1) PDF erzeugen und zu R2 hochladen
     try:
         from app.storage import upload_pdf_with_fallback
+        from app.pdf.filler import fill_kindergeld
+        from pathlib import Path
         
-        # Aktuell: JSON als Platzhalter (später echte PDF-Generierung)
-        pdf_content = json.dumps(payload, ensure_ascii=False, indent=2).encode('utf-8')
         fid = f"{st['form']}-{uuid.uuid4().hex}.pdf"
+        temp_path = ART_DIR / fid
         
-        # Upload zu R2 (mit lokalem Fallback)
+        # Template-Pfad
+        template = "app/pdf/templates/kg1.pdf"
+        
+        # PDF mit echten Daten füllen
+        fill_kindergeld(template, str(temp_path), {"fields": st["fields"], "kids": st.get("kids", [])})
+        
+        # PDF lesen und hochladen
+        pdf_content = temp_path.read_bytes()
         success, url = upload_pdf_with_fallback(pdf_content, fid)
+        
+        # Temp-Datei löschen
+        temp_path.unlink(missing_ok=True)
+
         
         if not success:
             return save_and_return("Ich konnte die Datei gerade nicht hochladen. Versuch es bitte nochmal.")
