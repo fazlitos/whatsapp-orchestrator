@@ -19,8 +19,40 @@ except Exception:
 ART_DIR = Path("/tmp/artifacts")
 ART_DIR.mkdir(exist_ok=True)
 
-# ---------- In-Memory State (für Tests) ----------
-STATE = {}
+# ---------- Redis State Management ----------
+from app.state_manager import state_manager
+
+# Backward-kompatible Wrapper
+class StateDict:
+    """Wrapper um STATE-Dict Syntax beizubehalten."""
+    def get(self, user, default=None):
+        state = state_manager.get(user)
+        return state if state else default
+    
+    def __getitem__(self, user):
+        return state_manager.get(user) or self._default_state()
+    
+    def __setitem__(self, user, state):
+        state_manager.set(user, state)
+    
+    def setdefault(self, user, default):
+        existing = state_manager.get(user)
+        if existing:
+            return existing
+        state_manager.set(user, default)
+        return default
+    
+    def _default_state(self):
+        return {
+            "form": "kindergeld",
+            "fields": {},
+            "kids": [],
+            "phase": "collect",
+            "idx": 0,
+            "lang": "de",
+        }
+
+STATE = StateDict()
 
 BASE = Path(__file__).resolve().parent
 
