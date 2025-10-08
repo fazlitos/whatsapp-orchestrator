@@ -232,3 +232,52 @@ async def make_pdf(payload: dict, request: Request):
 def get_artifact(fid: str):
     path = ART_DIR / fid
     return FileResponse(path, media_type="application/pdf", filename=fid)
+# ---------- PDF Debug Endpoints ----------
+@app.get("/pdf/debug/fields")
+def pdf_debug_fields():
+    """Zeigt alle Formularfelder im KG1-PDF an."""
+    if not os.path.exists(TEMPLATE_KG1):
+        return {"error": f"Template not found: {TEMPLATE_KG1}"}
+    
+    from PyPDF2 import PdfReader
+    
+    try:
+        reader = PdfReader(TEMPLATE_KG1)
+        
+        if reader.is_encrypted:
+            reader.decrypt("")
+        
+        fields = {}
+        
+        # Methode 1: get_fields()
+        if hasattr(reader, 'get_fields'):
+            form_fields = reader.get_fields()
+            if form_fields:
+                for name, field in form_fields.items():
+                    fields[name] = {
+                        "type": str(field.get('/FT', 'unknown')),
+                        "value": str(field.get('/V', ''))
+                    }
+                return {"ok": True, "count": len(fields), "fields": fields}
+        
+        # Methode 2: Annotationen
+        for page_num, page in enumerate(reader.pages):
+            if '/Annots' in page:
+                for annot in page['/Annots']:
+                    obj = annot.get_object()
+                    if obj.get('/T'):
+                        name = obj.get('/T')
+                        fields[name] = {
+                            "type": str(obj.get('/FT', 'unknown')),
+                            "page": page_num,
+                            "value": str(obj.get('/V', ''))
+                        }
+        
+        if not fields:
+            return {"ok": False, "message": "Keine Formularfelder gefunden"}
+        
+        return {"ok": True, "count": len(fields), "fields": fields}
+        
+    except Exception as e:
+        log.exception("fields debug error")
+        return {"ok": False, "error": str(e)}
