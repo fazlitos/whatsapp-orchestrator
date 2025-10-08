@@ -1,7 +1,9 @@
 # app/main.py
 from fastapi import FastAPI, Request, Form, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 import os, uuid, json, pathlib, logging
+from pathlib import Path
+from PyPDF2 import PdfReader
 
 from app.orchestrator import handle_message
 from app.providers import send_whatsapp_text
@@ -13,7 +15,8 @@ log = logging.getLogger("uvicorn")
 ART_DIR = pathlib.Path("/tmp/artifacts")
 ART_DIR.mkdir(exist_ok=True)
 
-TEMPLATE_KG1 = "app/pdf/templates/kg1.pdf"  # Pfad zum Formular-Template
+TEMPLATE_DIR = Path("app/pdf/templates")
+TEMPLATE_KG1 = str(TEMPLATE_DIR / "kg1.pdf")
 
 @app.get("/health")
 def health():
@@ -62,66 +65,6 @@ async def webhook(req: Request):
         log.exception(f"meta webhook parse error: {e}")
     return {"status": "ok"}
 
-# ====== PDF Debug Helpers ======
-from fastapi.responses import JSONResponse, PlainTextResponse, FileResponse
-from pathlib import Path
-import os, uuid, logging
-from PyPDF2 import PdfReader
-
-log = logging.getLogger("uvicorn")
-
-TEMPLATE_DIR = Path("app/pdf/templates")
-TEMPLATE_KG1 = str(TEMPLATE_DIR / "kg1.pdf")
-
-ART_DIR = Path("/tmp/artifacts")
-ART_DIR.mkdir(exist_ok=True)
-
-@app.get("/pdf/debug/list")
-def pdf_debug_list():
-    try:
-        if not TEMPLATE_DIR.exists():
-            return JSONResponse({"ok": False, "msg": f"Template dir not found: {TEMPLATE_DIR.as_posix()}"}, 404)
-        files = []
-        for p in TEMPLATE_DIR.iterdir():
-            if p.is_file():
-                files.append({"name": p.name, "size": p.stat().st_size})
-        return {"ok": True, "dir": TEMPLATE_DIR.as_posix(), "files": files}
-    except Exception as e:
-        log.exception("debug list error")
-        return JSONResponse({"ok": False, "error": str(e)}, 500)
-
-@app.get("/pdf/debug/info")
-def pdf_debug_info():
-    try:
-        if not os.path.exists(TEMPLATE_KG1):
-            return PlainTextResponse(f"Template not found: {TEMPLATE_KG1}", status_code=404)
-        r = PdfReader(TEMPLATE_KG1)
-        info = {
-            "encrypted": getattr(r, "is_encrypted", False),
-            "pages": len(r.pages),
-            "sizes": [{"w": float(p.mediabox.width), "h": float(p.mediabox.height)} for p in r.pages],
-        }
-        return info
-    except Exception as e:
-        log.exception("debug info error")
-        return PlainTextResponse(f"pdf_debug_info error: {e}", status_code=500)
-
-@app.get("/pdf/debug/kg1")
-def pdf_debug_grid():
-    try:
-        if not os.path.exists(TEMPLATE_KG1):
-            return PlainTextResponse(f"Template not found: {TEMPLATE_KG1}\nTipp: /pdf/debug/list prüfen.", 404)
-        # das Grid erzeugen
-        from app.pdf.filler import make_grid
-        out_bytes = make_grid(TEMPLATE_KG1)
-        tmp = ART_DIR / f"kg1-grid-{uuid.uuid4().hex}.pdf"
-        tmp.write_bytes(out_bytes)
-        return FileResponse(tmp, media_type="application/pdf", filename=tmp.name)
-    except Exception as e:
-        log.exception("debug kg1 error")
-        return PlainTextResponse(f"pdf_debug_grid error: {e}", status_code=500)
-
-
 # ---------- Twilio WhatsApp Webhook ----------
 @app.post("/webhook/twilio")
 async def webhook_twilio(From: str = Form(...), Body: str = Form(...)):
@@ -146,7 +89,7 @@ async def webhook_twilio(From: str = Form(...), Body: str = Form(...)):
 async def webhook_twilio_trailing(From: str = Form(...), Body: str = Form(...)):
     return await webhook_twilio(From, Body)
 
-# ---------- Session Management (NEU) ----------
+# ---------- Session Management ----------
 @app.get("/sessions/active")
 def sessions_active():
     """Zeigt aktive Sessions (für Monitoring)."""
@@ -182,64 +125,42 @@ def session_delete(user_id: str):
     success = state_manager.delete(user_id)
     return {"deleted": success}
 
-def detect_lang(text: str) -> str:
-    low = (text or "").lower()
-    if any(w in low for w in ["hello", "yes", "no", "child benefit"]):
-        return "en"
-    if any(w in low for w in ["përshëndetje", "pershendetje", "faleminderit", "po", "jo"]):
-        return "sq"
-    return "de"
-
-# ---------- (NEU) Debug: Koordinaten-Netz über KG1 legen ----------
-@app.get("/pdf/debug/kg1")
-def pdf_debug_grid():
-    if not os.path.exists(TEMPLATE_KG1):
-        return {"error": f"Template not found: {TEMPLATE_KG1}"}
-    out = make_grid(TEMPLATE_KG1)
-    tmp = ART_DIR / f"kg1-grid-{uuid.uuid4().hex}.pdf"
-    tmp.write_bytes(out)
-    return FileResponse(tmp, media_type="application/pdf", filename=tmp.name)
-
-# ---------- (NEU) Echte PDF erzeugen ----------
-@app.post("/make-pdf")
-async def make_pdf(payload: dict, request: Request):
-    """
-    payload = {"form":"kindergeld","data":{"fields": {...}, "kids":[...]}}
-    """
-    base = (os.getenv("APP_BASE_URL", "") or str(request.base_url)).rstrip("/")
-
-    form = (payload.get("form") or "kindergeld").lower()
-    data = payload.get("data") or {}
-
-    if form != "kindergeld":
-        return {"error": f"form '{form}' not supported yet"}
-
-    if not os.path.exists(TEMPLATE_KG1):
-        return {"error": f"Template not found: {TEMPLATE_KG1}"}
-
-    fid = f"kindergeld-{uuid.uuid4().hex}.pdf"
-    out_path = ART_DIR / fid
-
-    try:
-        fill_kindergeld(TEMPLATE_KG1, str(out_path), data)
-    except Exception as e:
-        log.exception(f"pdf fill error: {e}")
-        return {"error": "pdf_fill_failed"}
-
-    return {"id": fid, "url": f"{base}/artifact/{fid}"}
-
-@app.get("/artifact/{fid}")
-def get_artifact(fid: str):
-    path = ART_DIR / fid
-    return FileResponse(path, media_type="application/pdf", filename=fid)
 # ---------- PDF Debug Endpoints ----------
+@app.get("/pdf/debug/list")
+def pdf_debug_list():
+    try:
+        if not TEMPLATE_DIR.exists():
+            return JSONResponse({"ok": False, "msg": f"Template dir not found: {TEMPLATE_DIR.as_posix()}"}, 404)
+        files = []
+        for p in TEMPLATE_DIR.iterdir():
+            if p.is_file():
+                files.append({"name": p.name, "size": p.stat().st_size})
+        return {"ok": True, "dir": TEMPLATE_DIR.as_posix(), "files": files}
+    except Exception as e:
+        log.exception("debug list error")
+        return JSONResponse({"ok": False, "error": str(e)}, 500)
+
+@app.get("/pdf/debug/info")
+def pdf_debug_info():
+    try:
+        if not os.path.exists(TEMPLATE_KG1):
+            return PlainTextResponse(f"Template not found: {TEMPLATE_KG1}", status_code=404)
+        r = PdfReader(TEMPLATE_KG1)
+        info = {
+            "encrypted": getattr(r, "is_encrypted", False),
+            "pages": len(r.pages),
+            "sizes": [{"w": float(p.mediabox.width), "h": float(p.mediabox.height)} for p in r.pages],
+        }
+        return info
+    except Exception as e:
+        log.exception("debug info error")
+        return PlainTextResponse(f"pdf_debug_info error: {e}", status_code=500)
+
 @app.get("/pdf/debug/fields")
 def pdf_debug_fields():
     """Zeigt alle Formularfelder im KG1-PDF an."""
     if not os.path.exists(TEMPLATE_KG1):
         return {"error": f"Template not found: {TEMPLATE_KG1}"}
-    
-    from PyPDF2 import PdfReader
     
     try:
         reader = PdfReader(TEMPLATE_KG1)
@@ -281,3 +202,59 @@ def pdf_debug_fields():
     except Exception as e:
         log.exception("fields debug error")
         return {"ok": False, "error": str(e)}
+
+@app.get("/pdf/debug/kg1")
+def pdf_debug_grid():
+    try:
+        if not os.path.exists(TEMPLATE_KG1):
+            return PlainTextResponse(f"Template not found: {TEMPLATE_KG1}\nTipp: /pdf/debug/list prüfen.", 404)
+        # das Grid erzeugen
+        out_bytes = make_grid(TEMPLATE_KG1)
+        tmp = ART_DIR / f"kg1-grid-{uuid.uuid4().hex}.pdf"
+        tmp.write_bytes(out_bytes)
+        return FileResponse(tmp, media_type="application/pdf", filename=tmp.name)
+    except Exception as e:
+        log.exception("debug kg1 error")
+        return PlainTextResponse(f"pdf_debug_grid error: {e}", status_code=500)
+
+# ---------- PDF Generation ----------
+@app.post("/make-pdf")
+async def make_pdf(payload: dict, request: Request):
+    """
+    payload = {"form":"kindergeld","data":{"fields": {...}, "kids":[...]}}
+    """
+    base = (os.getenv("APP_BASE_URL", "") or str(request.base_url)).rstrip("/")
+
+    form = (payload.get("form") or "kindergeld").lower()
+    data = payload.get("data") or {}
+
+    if form != "kindergeld":
+        return {"error": f"form '{form}' not supported yet"}
+
+    if not os.path.exists(TEMPLATE_KG1):
+        return {"error": f"Template not found: {TEMPLATE_KG1}"}
+
+    fid = f"kindergeld-{uuid.uuid4().hex}.pdf"
+    out_path = ART_DIR / fid
+
+    try:
+        fill_kindergeld(TEMPLATE_KG1, str(out_path), data)
+    except Exception as e:
+        log.exception(f"pdf fill error: {e}")
+        return {"error": "pdf_fill_failed"}
+
+    return {"id": fid, "url": f"{base}/artifact/{fid}"}
+
+@app.get("/artifact/{fid}")
+def get_artifact(fid: str):
+    path = ART_DIR / fid
+    return FileResponse(path, media_type="application/pdf", filename=fid)
+
+# ---------- Helpers ----------
+def detect_lang(text: str) -> str:
+    low = (text or "").lower()
+    if any(w in low for w in ["hello", "yes", "no", "child benefit"]):
+        return "en"
+    if any(w in low for w in ["përshëndetje", "pershendetje", "faleminderit", "po", "jo"]):
+        return "sq"
+    return "de"
