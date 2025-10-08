@@ -5,17 +5,72 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from PyPDF2 import PdfReader, PdfWriter
 
-# ---------- Kleine Zeichen-Primitive ----------
+# ---------- Koordinaten-Mapping (gemessen mit Tool) ----------
+KG1_MAP = {
+    "full_name": {"page": 1, "x": 98, "y": 814, "size": 10},  # Familienname
+    "vorname": {"page": 1, "x": 96, "y": 767, "size": 10},  # Vorname
+    "dob": {"page": 1, "x": 95, "y": 719, "size": 10},  # Geburtsdatum
+    "geburtsort": {"page": 1, "x": 209, "y": 719, "size": 10},  # Geburtsort
+    "geschlecht": {"page": 1, "x": 486, "y": 719, "size": 10},  # Geschlecht
+    "staatsangehoerigkeit": {"page": 1, "x": 567, "y": 720, "size": 10},  # Staatsangehörigkeit
+    "anschrift": {"page": 1, "x": 98, "y": 639, "size": 10},  # Anschrift (komplette Zeile)
+    "taxid_1": {"page": 1, "x": 98, "y": 863, "size": 10},  # Steuer-ID Feld 1 (2 Ziffern)
+    "taxid_2": {"page": 1, "x": 161, "y": 863, "size": 10},  # Steuer-ID Feld 2 (3 Ziffern)
+    "taxid_3": {"page": 1, "x": 250, "y": 864, "size": 10},  # Steuer-ID Feld 3 (3 Ziffern)
+    "taxid_4": {"page": 1, "x": 340, "y": 864, "size": 10},  # Steuer-ID Feld 4 (3 Ziffern)
+    "marital_ledig": {"page": 1, "x": 98, "y": 566, "size": 10},  # Familienstand: Checkbox LEDIG
+    "marital_verheiratet": {"page": 1, "x": 383, "y": 588, "size": 10},  # Familienstand: Checkbox VERHEIRATET
+    "marital_geschieden": {"page": 1, "x": 383, "y": 566, "size": 10},  # Familienstand: Checkbox GESCHIEDEN
+    "marital_verwitwet": {"page": 1, "x": 383, "y": 545, "size": 10},  # Familienstand: Checkbox VERWITWET
+    "marital_lebenspartner": {"page": 1, "x": 531, "y": 589, "size": 10},  # Familienstand: Checkbox LEBENSPARTNER
+    "marital_aufgehoben": {"page": 1, "x": 531, "y": 567, "size": 10},  # Familienstand: Checkbox AUFGEHOBEN
+    "marital_seit": {"page": 1, "x": 238, "y": 568, "size": 10},  # Familienstand: SEIT (Datum)
+    "iban": {"page": 1, "x": 99, "y": 188, "size": 10},  # IBAN (komplette Zeile)
+    "bic": {"page": 1, "x": 100, "y": 143, "size": 10},  # BIC (falls Feld vorhanden)
+}
+
+# ---------- Helper-Funktionen ----------
+def _split_taxid(taxid: str) -> tuple:
+    """Teilt Steuer-ID in 4 Teile: 12-345-678-901"""
+    taxid = str(taxid).replace(" ", "").replace("-", "")
+    if len(taxid) != 11:
+        return "", "", "", ""
+    return taxid[0:2], taxid[2:5], taxid[5:8], taxid[8:11]
+
+def _get_marital_checkbox(marital: str) -> str:
+    """Gibt den Key der richtigen Checkbox zurück"""
+    mapping = {
+        "ledig": "marital_ledig",
+        "verheiratet": "marital_verheiratet",
+        "geschieden": "marital_geschieden",
+        "verwitwet": "marital_verwitwet",
+        "lebenspartnerschaft": "marital_lebenspartner",
+        "getrennt": "marital_aufgehoben"
+    }
+    return mapping.get(str(marital).lower(), "marital_ledig")
+
+def _fmt_date(d: str) -> str:
+    """Formatiert Datum zu TT.MM.JJJJ"""
+    if not d:
+        return ""
+    d = str(d).replace("-", ".")
+    return d
+
+def _split_name(full_name: str) -> tuple:
+    """Teilt 'Vorname Nachname' auf."""
+    parts = str(full_name).strip().split()
+    if len(parts) >= 2:
+        vorname = parts[0]
+        nachname = " ".join(parts[1:])
+        return vorname, nachname
+    return full_name, ""
+
+# ---------- PDF-Overlay-Funktionen ----------
 def _make_overlay(page_sizes: List[tuple], instructions: List[Dict[str, Any]]) -> io.BytesIO:
-    """
-    Baut ein Mehrseiten-Overlay (eine PDF) mit allen Texten.
-    page_sizes: [(w,h), ...] aus dem Template
-    instructions: [{page:int, x:float, y:float, text:str, size:int}, ...]
-    """
+    """Baut ein Mehrseiten-Overlay mit allen Texten."""
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=page_sizes[0] if page_sizes else letter)
     
-    # Pro Seite zeichnen
     by_page: Dict[int, List[Dict[str, Any]]] = {}
     for ins in instructions:
         by_page.setdefault(ins["page"], []).append(ins)
@@ -33,6 +88,7 @@ def _make_overlay(page_sizes: List[tuple], instructions: List[Dict[str, Any]]) -
     return buf
 
 def _merge(template_path: str, overlay_pdf: io.BytesIO) -> bytes:
+    """Merged Template mit Overlay."""
     tpl = PdfReader(template_path)
     ovl = PdfReader(overlay_pdf)
     out = PdfWriter()
@@ -45,8 +101,9 @@ def _merge(template_path: str, overlay_pdf: io.BytesIO) -> bytes:
     obuf.seek(0)
     return obuf.read()
 
-# ---------- Debug: Grid über Template legen ----------
+# ---------- Debug: Grid ----------
 def make_grid(template_path: str) -> bytes:
+    """Erzeugt Grid-PDF für Koordinaten-Messung."""
     tpl = PdfReader(template_path)
     page_sizes = []
     for p in tpl.pages:
@@ -69,53 +126,21 @@ def make_grid(template_path: str) -> bytes:
             c.drawString(2, y + 2, str(y))
         c.setFont("Helvetica", 10)
         c.setStrokeColorRGB(1, 0, 0)
-        c.drawString(20, h - 20, f"Seite {pno+1} – Koordinatennetz (0,0 unten links, Einheiten: pt)")
+        c.drawString(20, h - 20, f"Seite {pno+1} – Koordinatennetz (0,0 unten links)")
         c.showPage()
     c.save()
     buf.seek(0)
     return _merge(template_path, buf)
 
-# ---------- Mapping & Fülllogik Kindergeld ----------
-# Koordinaten basierend auf Grid-PDF (gemessen)
-KG1_MAP = {
-    # Seite 2 (page: 1) - Antragsteller
-    "full_name":     {"page": 1, "x": 320, "y": 548, "size": 10},  # Familienname
-    "vorname":       {"page": 1, "x": 320, "y": 604, "size": 10},  # Vorname (falls separiert)
-    "dob":           {"page": 1, "x": 320, "y": 661, "size": 10},  # Geburtsdatum
-    "geburtsort":    {"page": 1, "x": 545, "y": 661, "size": 10},  # Geburtsort
-    "addr_street":   {"page": 1, "x": 320, "y": 757, "size": 10},  # Anschrift
-    "marital":       {"page": 1, "x": 475, "y": 390, "size": 10},  # Familienstand (Checkbox-Bereich)
-    "taxid_parent":  {"page": 1, "x": 520, "y": 320, "size": 10},  # Steuer-ID (falls separates Feld)
-    "iban":          {"page": 1, "x": 475, "y": 125, "size": 10},  # IBAN
-    "bic":           {"page": 1, "x": 475, "y": 90,  "size": 10},  # BIC
-    
-    # Seite 3 (page: 2) - Kind 1
-    "kid_name_1":    {"page": 2, "x": 75,  "y": 715, "size": 10},  # Vorname Kind
-    "kid_fname_1":   {"page": 2, "x": 480, "y": 715, "size": 10},  # Familienname Kind
-    "kid_dob_1":     {"page": 2, "x": 220, "y": 715, "size": 10},  # Geburtsdatum Kind
-    "kid_geschl_1":  {"page": 2, "x": 315, "y": 715, "size": 10},  # Geschlecht Kind
-}
-
-def _fmt_date(d: str) -> str:
-    """Erwartet TT.MM.JJJJ; einfache Absicherung."""
-    if not d:
-        return ""
-    d = str(d).replace("-", ".")
-    return d
-
-def _split_name(full_name: str) -> tuple:
-    """Teilt 'Vorname Nachname' auf."""
-    parts = full_name.strip().split()
-    if len(parts) >= 2:
-        vorname = parts[0]
-        nachname = " ".join(parts[1:])
-        return vorname, nachname
-    return full_name, ""
-
+# ---------- Hauptfunktion: KG1 ausfüllen ----------
 def fill_kindergeld(template_path: str, out_path: str, data: Dict[str, Any]) -> None:
     """
-    data = {"fields": {...}, "kids": [{...}, ...]}
-    schreibt die ausgefüllte PDF an out_path.
+    Füllt KG1-Formular mit Daten aus.
+    
+    Args:
+        template_path: Pfad zum KG1-Template
+        out_path: Pfad für ausgefülltes PDF
+        data: {"fields": {...}, "kids": [...]}
     """
     # 1) Seitengrößen lesen
     tpl = PdfReader(template_path)
@@ -125,43 +150,69 @@ def fill_kindergeld(template_path: str, out_path: str, data: Dict[str, Any]) -> 
 
     # 2) Instruktionen zusammenstellen
     f = data.get("fields", {})
-    kids = data.get("kids", []) or []
     instr: List[Dict[str, Any]] = []
 
     def put(key, text):
+        """Fügt Text an Koordinate hinzu."""
         m = KG1_MAP.get(key)
         if not m:
+            print(f"DEBUG: Key '{key}' nicht in KG1_MAP")
             return
         instr.append({
-            "page": m["page"], 
-            "x": m["x"], 
-            "y": m["y"], 
-            "text": str(text or ""), 
+            "page": m["page"],
+            "x": m["x"],
+            "y": m["y"],
+            "text": str(text or ""),
             "size": m.get("size", 10)
         })
 
-    # Name aufteilen
+    # Name (aufteilen falls zusammen)
     full_name = f.get("full_name", "")
     vorname, nachname = _split_name(full_name)
     
-    put("full_name", nachname)  # Familienname
-    put("vorname", vorname)     # Vorname
+    put("full_name", nachname)
+    put("vorname", vorname)
+    
+    # Geburtsdatum
     put("dob", _fmt_date(f.get("dob")))
-    put("addr_street", f.get("addr_street"))
-    put("taxid_parent", f.get("taxid_parent"))
-    put("iban", f.get("iban"))
-    put("marital", f.get("marital"))
-
-    # Kind 1
-    if len(kids) >= 1:
-        k = kids[0]
-        kid_full_name = k.get("kid_name", "")
-        kid_vorname, kid_nachname = _split_name(kid_full_name)
-        
-        put("kid_name_1", kid_vorname)
-        put("kid_fname_1", kid_nachname)
-        put("kid_dob_1", _fmt_date(k.get("kid_dob")))
-
+    
+    # Optional: Geburtsort, Geschlecht, Staatsangehörigkeit (falls im Bot gesammelt)
+    put("geburtsort", f.get("geburtsort", ""))
+    put("geschlecht", f.get("geschlecht", ""))
+    put("staatsangehoerigkeit", f.get("citizenship", "deutsch"))
+    
+    # Anschrift (zusammengesetzt)
+    anschrift = f"{f.get('addr_street', '')}, {f.get('addr_plz', '')} {f.get('addr_city', '')}"
+    put("anschrift", anschrift.strip(", "))
+    
+    # Steuer-ID (aufgeteilt)
+    taxid_parts = _split_taxid(f.get("taxid_parent", ""))
+    put("taxid_1", taxid_parts[0])
+    put("taxid_2", taxid_parts[1])
+    put("taxid_3", taxid_parts[2])
+    put("taxid_4", taxid_parts[3])
+    
+    # Familienstand (Checkbox + Datum)
+    marital = f.get("marital", "ledig")
+    checkbox_key = _get_marital_checkbox(marital)
+    put(checkbox_key, "X")  # Checkbox ankreuzen
+    
+    # "seit"-Datum (nur wenn nicht ledig)
+    if checkbox_key != "marital_ledig":
+        # Falls "marital_seit" in Daten vorhanden, nutze das; sonst leer lassen
+        seit = f.get("marital_seit", "")
+        if seit:
+            put("marital_seit", seit)
+    
+    # IBAN & BIC
+    iban = f.get("iban", "")
+    put("iban", iban)
+    
+    # BIC optional (oft nicht nötig bei deutscher IBAN)
+    bic = f.get("bic", "")
+    if bic:
+        put("bic", bic)
+    
     # 3) Overlay bauen & mergen
     overlay = _make_overlay(page_sizes, instr)
     pdf_bytes = _merge(template_path, overlay)
@@ -169,3 +220,5 @@ def fill_kindergeld(template_path: str, out_path: str, data: Dict[str, Any]) -> 
     # 4) Schreiben
     with open(out_path, "wb") as f_out:
         f_out.write(pdf_bytes)
+    
+    print(f"✅ PDF erstellt: {out_path}")
