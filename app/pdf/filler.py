@@ -1,6 +1,6 @@
 # app/pdf/filler.py
 """
-KG1 PDF-Formular Filler - verwendet echte Formularfelder
+KG1 PDF-Formular Filler - KORREKTE Feldnamen für echtes KG1-Formular
 """
 from PyPDF2 import PdfReader, PdfWriter
 from typing import Dict, Any
@@ -35,81 +35,93 @@ def _fmt_iban(iban: str) -> str:
 
 def map_data_to_kg1_fields(data: Dict[str, Any]) -> Dict[str, str]:
     """
-    Mappt unsere Datenstruktur auf die KG1-Formularfelder.
-    
-    Basierend auf den echten Feldnamen aus dem PDF.
+    Mappt unsere Datenstruktur auf die EXAKTEN KG1-Formularfelder.
     """
     fields_data = data.get("fields", {})
     kids = data.get("kids", [])
     
     # Name aufteilen
-    vorname, familienname = _split_name(fields_data.get("full_name", ""))
+    vorname, nachname = _split_name(fields_data.get("full_name", ""))
     
     # Steuer-ID aufteilen
     taxid_parts = _split_taxid(fields_data.get("taxid_parent", ""))
     
-    # Basis-Präfix für alle Felder
-    prefix = "topmostSubform[0].Seite1[0]."
+    # Basis-Präfixe
+    seite1 = "topmostSubform[0].Seite1[0]."
+    seite2 = "topmostSubform[0].Page2[0]."
     
-    # Mapping unserer Daten auf PDF-Felder
+    # PDF-Felder mit EXAKTEN Namen aus dem echten Formular
     pdf_fields = {}
     
-    # Punkt-1: Angaben zur antragstellenden Person
-    punkt1 = prefix + "Punkt-1[0]."
+    # ========== SEITE 1: Antragsteller ==========
     
+    # Steuer-ID (4 separate Felder)
     pdf_fields.update({
-        # Steuer-ID (4 Felder)
-        punkt1 + "Pkt-1-Zeile-1[0].Steuer-ID-1[0]": taxid_parts[0],
-        punkt1 + "Pkt-1-Zeile-1[0].Steuer-ID-2[0]": taxid_parts[1],
-        punkt1 + "Pkt-1-Zeile-1[0].Steuer-ID-3[0]": taxid_parts[2],
-        punkt1 + "Pkt-1-Zeile-1[0].Steuer-ID-4[0]": taxid_parts[3],
-        
-        # Name (Zeile 2)
-        punkt1 + "Pkt-1-Zeile-1[0].Familienname-Antragsteller[0]": familienname,
-        punkt1 + "Pkt-1-Zeile-1[0].Titel-Antragsteller[0]": "",  # haben wir nicht
-        
-        # Vorname (Zeile 3)
-        punkt1 + "Pkt-1-Zeile-2[0].Vorname-Antragsteller[0]": vorname,
-        punkt1 + "Pkt-1-Zeile-2[0].Geburtsname-Antragsteller[0]": "",  # haben wir nicht
-        
-        # Geburtsdaten (Zeile 4)
-        punkt1 + "Pkt-1-Zeile-3[0].Geburtsdatum-Antragsteller[0]": _fmt_date(fields_data.get("dob")),
-        punkt1 + "Pkt-1-Zeile-3[0].Geburtsort-Antragsteller[0]": "",  # haben wir nicht
-        punkt1 + "Pkt-1-Zeile-3[0].Geschlecht-Antragsteller[0]": "",  # haben wir nicht
-        punkt1 + "Pkt-1-Zeile-3[0].Staatsangehörigkeit-Antragsteller[0]": fields_data.get("citizenship", "deutsch"),
-        
-        # Anschrift
-        punkt1 + "Anschrift-Antragsteller[0]": f"{fields_data.get('addr_street', '')}, {fields_data.get('addr_plz', '')} {fields_data.get('addr_city', '')}".strip(", "),
-        
-        # Familienstand
-        punkt1 + "Familienstand[0].#area[12].ledig[0]": "X" if fields_data.get("marital", "").lower() == "ledig" else "",
-        punkt1 + "Familienstand[0].#area[12].verheiratet[0]": "X" if fields_data.get("marital", "").lower() == "verheiratet" else "",
-        punkt1 + "Familienstand[0].#area[12].geschieden[0]": "X" if fields_data.get("marital", "").lower() == "geschieden" else "",
-        punkt1 + "Familienstand[0].#area[12].getrennt[0]": "X" if fields_data.get("marital", "").lower() == "getrennt" else "",
-        punkt1 + "Familienstand[0].#area[12].verwitwet[0]": "X" if fields_data.get("marital", "").lower() == "verwitwet" else "",
-        punkt1 + "Familienstand[0].#area[12].aufgehoben[0]": "X" if fields_data.get("marital", "").lower() == "aufgehoben" else "",
+        seite1 + "Punkt-1[0].Steuer-ID[0].Steuer-ID-1[0]": taxid_parts[0],
+        seite1 + "Punkt-1[0].Steuer-ID[0].Steuer-ID-2[0]": taxid_parts[1],
+        seite1 + "Punkt-1[0].Steuer-ID[0].Steuer-ID-3[0]": taxid_parts[2],
+        seite1 + "Punkt-1[0].Steuer-ID[0].Steuer-ID-4[0]": taxid_parts[3],
     })
     
-    # Punkt-3: Zahlungsweg
-    punkt3 = prefix + "Punkt-3[0]."
-    
+    # Name (Zeile 1)
     pdf_fields.update({
-        punkt3 + "IBAN[0]": _fmt_iban(fields_data.get("iban", "")),
-        punkt3 + "BIC[0]": "",  # haben wir nicht (oft nicht nötig)
-        punkt3 + "Bank[0]": "",  # haben wir nicht
-        punkt3 + "Name-Kontoinhaber[0]": "",  # leer = Antragsteller
+        seite1 + "Punkt-1[0].Pkt-1-Zeile-1[0].Name-Antragsteller[0]": nachname,
+        seite1 + "Punkt-1[0].Pkt-1-Zeile-1[0].Titel-Antragsteller[0]": "",
     })
     
-    # Kinder (Tabelle 1)
-    # topmostSubform[0].Seite1[0].Punkt-5[0].Tabelle1-Kinder[0].Zeile1[0].Zeile1[0]
+    # Vorname (Zeile 2)
+    pdf_fields.update({
+        seite1 + "Punkt-1[0].Pkt-1-Zeile-2[0].Vorname-Antragsteller[0]": vorname,
+        seite1 + "Punkt-1[0].Pkt-1-Zeile-2[0].Geburtsname-Antragsteller[0]": "",
+    })
+    
+    # Geburtsdaten (Zeile 3)
+    pdf_fields.update({
+        seite1 + "Punkt-1[0].Pkt-1-Zeile-3[0].Geburtsdatum-Antragsteller[0]": _fmt_date(fields_data.get("dob")),
+        seite1 + "Punkt-1[0].Pkt-1-Zeile-3[0].Geburtsort-Antragsteller[0]": "",
+        seite1 + "Punkt-1[0].Pkt-1-Zeile-3[0].Geschlecht-Antragsteller[0]": "",
+        seite1 + "Punkt-1[0].Pkt-1-Zeile-3[0].Staatsangehörigkeit-Antragsteller[0]": fields_data.get("citizenship", "deutsch"),
+    })
+    
+    # Anschrift (EIN Feld für die komplette Adresse!)
+    anschrift = f"{fields_data.get('addr_street', '')}, {fields_data.get('addr_plz', '')} {fields_data.get('addr_city', '')}"
+    pdf_fields[seite1 + "Punkt-1[0].Anschrift-Antragsteller[0]"] = anschrift.strip(", ")
+    
+    # Familienstand (Checkboxen)
+    marital = str(fields_data.get("marital", "ledig")).lower()
+    pdf_fields.update({
+        seite1 + "Punkt-1[0].Familienstand[0].#area[12].ledig[0]": "X" if marital == "ledig" else "",
+        seite1 + "Punkt-1[0].Familienstand[0].#area[12].verheiratet[0]": "X" if marital == "verheiratet" else "",
+        seite1 + "Punkt-1[0].Familienstand[0].#area[12].geschieden[0]": "X" if marital == "geschieden" else "",
+        seite1 + "Punkt-1[0].Familienstand[0].#area[12].getrennt[0]": "X" if marital == "getrennt" else "",
+        seite1 + "Punkt-1[0].Familienstand[0].#area[12].verwitwet[0]": "X" if marital == "verwitwet" else "",
+        seite1 + "Punkt-1[0].Familienstand[0].#area[12].aufgehoben[0]": "X" if marital == "aufgehoben" else "",
+        seite1 + "Punkt-1[0].Familienstand[0].#area[12].Partner[0]": "X" if marital == "partner" else "",
+        seite1 + "Punkt-1[0].Familienstand[0].#area[12].seit[0]": "",  # Datum haben wir nicht
+    })
+    
+    # ========== PUNKT 3: Zahlungsweg ==========
+    pdf_fields.update({
+        seite1 + "Punkt-3[0].IBAN[0]": _fmt_iban(fields_data.get("iban", "")),
+        seite1 + "Punkt-3[0].BIC[0]": "",
+        seite1 + "Punkt-3[0].Bank[0]": "",
+        seite1 + "Punkt-3[0].Antragsteller[0]": "X",  # Checkbox: Kontoinhaber ist Antragsteller
+        seite1 + "Punkt-3[0].andere-Person[0]": "",
+        seite1 + "Punkt-3[0].Name-Kontoinhaber[0]": "",
+    })
+    
+    # ========== SEITE 2: Kinder ==========
+    # Tabelle1-Kinder: Zeile1-5, jeweils Zelle1-4
+    # Zelle1 = Name, Zelle2 = Geburtsdatum, Zelle3 = Geschlecht, Zelle4 = Kindergeldnummer
+    
     if kids:
-        for i, kid in enumerate(kids[:5], 1):  # Max 5 Kinder in Tabelle1
-            zeile = f"{prefix}Punkt-5[0].Tabelle1-Kinder[0].Zeile{i}[0]."
+        for i, kid in enumerate(kids[:5], 1):  # Max 5 Kinder
+            zeile_prefix = seite2 + f"Punkt-5[0].Tabelle1-Kinder[0].Zeile{i}[0]."
             pdf_fields.update({
-                zeile + f"Zeile{i}[0]": kid.get("kid_name", ""),
-                zeile + f"Zeile{i}[1]": _fmt_date(kid.get("kid_dob", "")),
-                zeile + f"Zeile{i}[2]": "",  # Geschlecht haben wir nicht
-                zeile + f"Zeile{i}[3]": "",  # Familienkasse haben wir nicht
+                zeile_prefix + "Zelle1[0]": kid.get("kid_name", ""),
+                zeile_prefix + "Zelle2[0]": _fmt_date(kid.get("kid_dob", "")),
+                zeile_prefix + "Zelle3[0]": "",  # Geschlecht haben wir nicht
+                zeile_prefix + "Zelle4[0]": "",  # Kindergeldnummer haben wir nicht
             })
     
     return pdf_fields
@@ -139,16 +151,18 @@ def fill_kindergeld(template_path: str, out_path: str, data: Dict[str, Any]) -> 
     
     print(f"\n📝 Fülle {len(field_values)} Felder aus...")
     
-    # Felder befüllen (neuere PyPDF2 API)
+    # Felder befüllen
     try:
         if hasattr(writer, 'update_page_form_field_values'):
+            # Neuere PyPDF2 API
             for page_num in range(len(writer.pages)):
                 writer.update_page_form_field_values(
                     writer.pages[page_num],
                     field_values
                 )
         else:
-            # Ältere Methode - direkt über Annotationen
+            # Ältere Methode - über Annotationen
+            filled_count = 0
             for page in writer.pages:
                 if '/Annots' in page:
                     for annotation in page['/Annots']:
@@ -161,19 +175,28 @@ def fill_kindergeld(template_path: str, out_path: str, data: Dict[str, Any]) -> 
                                     '/V': value,
                                     '/AS': value
                                 })
+                                filled_count += 1
                         except Exception as e:
-                            pass  # Feld konnte nicht gesetzt werden
+                            pass
+            print(f"   → {filled_count} Felder erfolgreich gefüllt")
     except Exception as e:
-        print(f"⚠️  Warnung beim Ausfüllen: {e}")
+        print(f"⚠️  Warnung: {e}")
     
     # Speichern
     with open(out_path, 'wb') as f:
         writer.write(f)
     
     print(f"✅ PDF erstellt: {out_path}")
-    print(f"   Ausgefüllt: Name, Adresse, Steuer-ID, IBAN, Familienstand")
+    fields = data.get("fields", {})
+    print(f"   Ausgefüllt:")
+    print(f"   • Name: {fields.get('full_name')}")
+    print(f"   • Geburtsdatum: {fields.get('dob')}")
+    print(f"   • Adresse: {fields.get('addr_street')}, {fields.get('addr_plz')} {fields.get('addr_city')}")
+    print(f"   • Steuer-ID: {fields.get('taxid_parent')}")
+    print(f"   • IBAN: {fields.get('iban')}")
+    print(f"   • Familienstand: {fields.get('marital')}")
     if data.get("kids"):
-        print(f"   Kinder: {len(data.get('kids', []))} eingetragen")
+        print(f"   • Kinder: {len(data.get('kids', []))}")
 
 def make_grid(template_path: str) -> bytes:
     """
@@ -203,17 +226,17 @@ def make_grid(template_path: str) -> bytes:
     c.setFont("Helvetica-Bold", 14)
     c.drawString(2*cm, h - 2*cm, f"KG1 Formularfelder ({len(fields)} gefunden)")
     
-    c.setFont("Courier", 8)
+    c.setFont("Courier", 7)
     y = h - 3*cm
     
     for i, name in enumerate(sorted(fields.keys()), 1):
         if y < 2*cm:
             c.showPage()
             y = h - 2*cm
-            c.setFont("Courier", 8)
+            c.setFont("Courier", 7)
         
-        c.drawString(1*cm, y, f"{i}. {name}")
-        y -= 0.4*cm
+        c.drawString(0.5*cm, y, f"{i}. {name}")
+        y -= 0.35*cm
     
     c.save()
     buf.seek(0)
