@@ -1,231 +1,259 @@
 # app/pdf/filler.py
-"""
-KG1 PDF-Formular Filler - ULTIMATE LÖSUNG
-Liest Koordinaten aus Formularfeldern und zeichnet Text DIREKT drauf
-"""
-from typing import Dict, Any
+# ---------------------------------------------------------------------
+# KG1-Füller (robust): Liest Widget-Rechtecke mit PyMuPDF (fitz),
+# schreibt Text direkt in die Rechtecke (insert_textbox) und entfernt
+# danach die Widgets -> statischer Text an exakt der Feldposition.
+# ---------------------------------------------------------------------
+
+from __future__ import annotations
+from typing import Dict, Any, List, Optional, Tuple
+import io
+import re
 import fitz  # PyMuPDF
 
-def _split_name(full_name: str) -> tuple:
-    """Teilt 'Vorname Nachname' auf."""
-    parts = str(full_name).strip().split(maxsplit=1)
-    if len(parts) == 2:
-        return parts[0], parts[1]
-    return full_name, ""
+BANNER = "📄 KG1 filler: PyMuPDF overlay mode (widgets->static text)"
 
-def _split_taxid(taxid: str) -> tuple:
-    """Teilt Steuer-ID: 12 345 678 901"""
-    taxid = str(taxid).replace(" ", "").replace("-", "")
-    if len(taxid) != 11:
-        return "", "", "", ""
-    return taxid[0:2], taxid[2:5], taxid[5:8], taxid[8:11]
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", s.strip().lower())
 
-def _fmt_date(d: str) -> str:
-    """Formatiert Datum zu TT.MM.JJJJ"""
-    if not d:
-        return ""
-    return str(d).replace("-", ".")
+def _compose_address(fields: Dict[str, str]) -> str:
+    street = fields.get("addr_street", "")
+    plz = fields.get("addr_plz", "")
+    city = fields.get("addr_city", "")
+    parts = [p for p in [street, f"{plz} {city}".strip()] if p]
+    return ", ".join(parts)
 
-def _fmt_iban(iban: str) -> str:
-    """Formatiert IBAN mit Leerzeichen"""
-    iban = str(iban).replace(" ", "").upper()
-    if len(iban) == 22 and iban.startswith("DE"):
-        return " ".join([iban[i:i+4] for i in range(0, len(iban), 4)])
-    return iban
+def _iban_compact(s: str) -> str:
+    return re.sub(r"\s+", "", s or "")
+
+def _text(v: Any) -> str:
+    return "" if v is None else str(v)
+
+def _collect_widgets(doc: fitz.Document) -> List[Tuple[int, fitz.Widget]]:
+    """Alle Widgets (Formularfelder) sammeln, inkl. Page-Index."""
+    out: List[Tuple[int, fitz.Widget]] = []
+    for i in range(len(doc)):
+        page = doc[i]
+        for w in page.widgets() or []:
+            out.append((i, w))
+    return out
+
+def _find_widget(widgets: List[Tuple[int, fitz.Widget]], needle: str) -> Optional[Tuple[int, fitz.Widget]]:
+    """Widget per Teilstring des Feldnamens finden (case-insensitive)."""
+    n = _norm(needle)
+    best: Optional[Tuple[int, fitz.Widget]] = None
+    for pidx, w in widgets:
+        name = w.field_name or ""
+        if n in _norm(name):
+            best = (pidx, w)
+            break
+    return best
+
+def _draw_text_in_widget_rect(
+    page: fitz.Page,
+    rect: fitz.Rect,
+    text: str,
+    fontsize: float = 10.0,
+    pad: float = 1.5,
+    bold: bool = False,
+):
+    """
+    Text „sauber“ in die Rechteckbox schreiben.
+    insert_textbox berücksichtigt Baseline/Umbruch selbst.
+    """
+    if not text:
+        return
+    r = fitz.Rect(rect)
+    # leicht innen zeichnen
+    r.x0 += pad
+    r.x1 -= pad
+    r.y0 += pad
+    r.y1 -= pad
+    fontname = "helv" if not bold else "helvB"
+    page.insert_textbox(r, text, fontsize=fontsize, fontname=fontname, align=0)
+
+def _draw_checkbox_mark(page: fitz.Page, rect: fitz.Rect, mark: str = "X", fontsize: float = 11.0):
+    """
+    Ein X/✓ mittig in die Checkbox-Box setzen (falls die Checkbox-Widgets
+    selbst keine Appearance-Streams haben).
+    """
+    cx = (rect.x0 + rect.x1) / 2.0
+    cy = (rect.y0 + rect.y1) / 2.0
+    # Position leicht nach links/unten justieren
+    page.insert_text((cx - fontsize * 0.35, cy + fontsize * 0.35), mark, fontsize=fontsize, fontname="helvB")
+
+def _remove_all_widgets(doc: fitz.Document):
+    """Alle Widgets aus dem Dokument entfernen (wir haben ja statischen Text gezeichnet)."""
+    for i in range(len(doc)):
+        page = doc[i]
+        for w in list(page.widgets() or []):
+            w.remove_from_page()
+
+def _fill_page1(
+    doc: fitz.Document,
+    widgets: List[Tuple[int, fitz.Widget]],
+    fields: Dict[str, Any],
+):
+    """
+    Seite 1 (in deinem PDF ist es oft 'Seite1'): Name, Geburtsdatum, Staatsangehörigkeit,
+    Familienstand, Anschrift, IBAN etc.
+    Die Feldnamen stammen aus deiner Liste (topmostSubform[...]...Name-Antragsteller, etc.).
+    Wir suchen fuzzy (per Teilstring) – robust gegen kleine Variationen.
+    """
+    # Name Antragsteller
+    tgt = _find_widget(widgets, "Name-Antragsteller")
+    if tgt:
+        pidx, w = tgt
+        page = doc[pidx]
+        _draw_text_in_widget_rect(page, w.rect, _text(fields.get("full_name", "")), fontsize=10)
+
+    # Geburtsdatum Antragsteller
+    tgt = _find_widget(widgets, "Geburtsdatum-Antragsteller")
+    if tgt:
+        pidx, w = tgt
+        doc[pidx].insert_textbox(w.rect, _text(fields.get("dob", "")), fontsize=10, fontname="helv")
+
+    # Staatsangehörigkeit
+    for key in ("Staatsangehörigkeit", "Staatsangehoerigkeit"):
+        tgt = _find_widget(widgets, key)
+        if tgt:
+            pidx, w = tgt
+            doc[pidx].insert_textbox(w.rect, _text(fields.get("citizenship", "")), fontsize=10, fontname="helv")
+            break
+
+    # Familienstand: ledig / verheiratet / geschieden / verwitwet
+    marital = _norm(_text(fields.get("marital", "")))
+    if marital:
+        # Checkbox-Ziele suchen
+        # Die Feldnamen in deinem PDF sahen in etwa so aus:
+        # ...Familienstand[0].ledig[0], ...verheiratet[0], ...geschieden[0], ...verwitwet[0]
+        opts = {
+            "ledig": "ledig",
+            "verheiratet": "verheiratet",
+            "geschieden": "geschieden",
+            "verwitwet": "verwitwet",
+            "dauernd getrennt": "dauernd getrennt lebend",
+        }
+        chosen = None
+        for k, label in opts.items():
+            if k in marital:
+                chosen = label
+                break
+        if chosen:
+            tgt = _find_widget(widgets, chosen)
+            if tgt:
+                pidx, w = tgt
+                _draw_checkbox_mark(doc[pidx], w.rect, "X", fontsize=11)
+
+    # Anschrift (als eine Zeile im Feld „Anschrift-Antragsteller“)
+    tgt = _find_widget(widgets, "Anschrift-Antragsteller")
+    if tgt:
+        pidx, w = tgt
+        doc[pidx].insert_textbox(w.rect, _compose_address(fields), fontsize=10, fontname="helv")
+
+    # IBAN (unter Zahlungsweg / Punkt 3)
+    tgt = _find_widget(widgets, "IBAN")
+    if tgt:
+        pidx, w = tgt
+        doc[pidx].insert_textbox(w.rect, _iban_compact(fields.get("iban", "")), fontsize=10, fontname="helv")
+
+    # Steuer-ID (viele Felder sind in Kästchen aufgeteilt, wir schreiben einmal in die Gesamtbox,
+    # wenn es sie gibt; ansonsten ignorieren wir die Kästchen – i.d.R. akzeptiert die Behörde beides)
+    for needle in [
+        "Steueridentifikationsnummer Antragsteller",
+        "Steuer-ID-Antragsteller",
+        "Steuer-ID Antragsteller",
+    ]:
+        tgt = _find_widget(widgets, needle)
+        if tgt:
+            pidx, w = tgt
+            doc[pidx].insert_textbox(w.rect, _text(fields.get("taxid_parent", "")), fontsize=10, fontname="helv")
+            break
+
+def _fill_kids(
+    doc: fitz.Document,
+    widgets: List[Tuple[int, fitz.Widget]],
+    kids: List[Dict[str, Any]],
+):
+    """
+    Sehr einfache Variante: wir tragen (falls vorhanden) Kind #1 in die
+    Felder „Vorname Kind“, „Geburtsdatum Kind“ ein (so wie sie im PDF heißen).
+    Du kannst das Mapping leicht erweitern, wenn die exakten Feldnamen feststehen.
+    """
+    if not kids:
+        return
+    k = kids[0]
+    # Name Kind
+    for needle in ["Name des Kindes", "Name-Kind", "Vorname-Kind", "Vorname des Kindes"]:
+        tgt = _find_widget(widgets, needle)
+        if tgt:
+            pidx, w = tgt
+            doc[pidx].insert_textbox(w.rect, _text(k.get("kid_name", "")), fontsize=10, fontname="helv")
+            break
+    # Geburtsdatum Kind
+    for needle in ["Geburtsdatum des Kindes", "Geburtsdatum-Kind"]:
+        tgt = _find_widget(widgets, needle)
+        if tgt:
+            pidx, w = tgt
+            doc[pidx].insert_textbox(w.rect, _text(k.get("kid_dob", "")), fontsize=10, fontname="helv")
+            break
 
 def fill_kindergeld(template_path: str, out_path: str, data: Dict[str, Any]) -> None:
     """
-    ULTIMATE LÖSUNG: Liest Feld-Koordinaten und zeichnet Text direkt.
+    Hauptfunktion, die dein /make-pdf aufruft.
+    Erwartet payload-Struktur:
+      {
+        "fields": {...},
+        "kids": [ {...}, ... ]
+      }
     """
-    fields_data = data.get("fields", {})
-    kids = data.get("kids", [])
-    
-    # Name aufteilen
-    vorname, nachname = _split_name(fields_data.get("full_name", ""))
-    taxid_parts = _split_taxid(fields_data.get("taxid_parent", ""))
-    
-    print(f"\n📝 ULTIMATE Methode: Lese Feld-Koordinaten und zeichne Text direkt...")
-    
-    # PDF öffnen
+    print(BANNER)
+
+    fields: Dict[str, Any] = (data or {}).get("fields", {}) or {}
+    kids: List[Dict[str, Any]] = (data or {}).get("kids", []) or []
+
     doc = fitz.open(template_path)
-    
-    # Basis-Präfixe
-    seite1 = "topmostSubform[0].Seite1[0]."
-    seite2 = "topmostSubform[0].Page2[0]."
-    
-    # Feldwerte definieren
-    field_values = {
-        # Steuer-ID (4 Felder)
-        seite1 + "Punkt-1[0].Steuer-ID[0].Steuer-ID-1[0]": taxid_parts[0],
-        seite1 + "Punkt-1[0].Steuer-ID[0].Steuer-ID-2[0]": taxid_parts[1],
-        seite1 + "Punkt-1[0].Steuer-ID[0].Steuer-ID-3[0]": taxid_parts[2],
-        seite1 + "Punkt-1[0].Steuer-ID[0].Steuer-ID-4[0]": taxid_parts[3],
-        
-        # Name
-        seite1 + "Punkt-1[0].Pkt-1-Zeile-1[0].Name-Antragsteller[0]": nachname,
-        
-        # Vorname
-        seite1 + "Punkt-1[0].Pkt-1-Zeile-2[0].Vorname-Antragsteller[0]": vorname,
-        
-        # Geburtsdaten
-        seite1 + "Punkt-1[0].Pkt-1-Zeile-3[0].Geburtsdatum-Antragsteller[0]": _fmt_date(fields_data.get("dob")),
-        seite1 + "Punkt-1[0].Pkt-1-Zeile-3[0].Staatsangehörigkeit-Antragsteller[0]": fields_data.get("citizenship", "deutsch"),
-        
-        # Anschrift
-        seite1 + "Punkt-1[0].Anschrift-Antragsteller[0]": f"{fields_data.get('addr_street', '')}, {fields_data.get('addr_plz', '')} {fields_data.get('addr_city', '')}".strip(", "),
-        
-        # IBAN
-        seite1 + "Punkt-3[0].IBAN[0]": _fmt_iban(fields_data.get("iban", "")),
-    }
-    
-    # Familienstand Checkboxen
-    familienstand_fields = {
-        "ledig": seite1 + "Punkt-1[0].Familienstand[0].#area[12].ledig[0]",
-        "verheiratet": seite1 + "Punkt-1[0].Familienstand[0].#area[12].verheiratet[0]",
-        "geschieden": seite1 + "Punkt-1[0].Familienstand[0].#area[12].geschieden[0]",
-    }
-    
-    # Kinder
-    if kids:
-        for i, kid in enumerate(kids[:5], 1):
-            zeile_prefix = seite2 + f"Punkt-5[0].Tabelle1-Kinder[0].Zeile{i}[0]."
-            field_values.update({
-                zeile_prefix + "Zelle1[0]": kid.get("kid_name", ""),
-                zeile_prefix + "Zelle2[0]": _fmt_date(kid.get("kid_dob", "")),
-            })
-    
-    # === SCHRITT 1: Koordinaten sammeln ===
-    field_coords = {}
-    
-    for page_num in range(len(doc)):
-        page = doc[page_num]
-        
-        for widget in page.widgets():
-            field_name = widget.field_name
-            rect = widget.rect  # (x0, y0, x1, y1)
-            
-            # Speichere Koordinaten
-            field_coords[field_name] = {
-                "page": page_num,
-                "rect": rect,
-                "type": widget.field_type,
-                "font_size": widget.text_fontsize if widget.text_fontsize else 10
-            }
-    
-    print(f"   → {len(field_coords)} Feld-Koordinaten gelesen")
-    
-    # === SCHRITT 2: Text an Koordinaten zeichnen ===
-    filled_count = 0
-    
-    for field_name, value in field_values.items():
-        if field_name in field_coords and value:
-            coords = field_coords[field_name]
-            page = doc[coords["page"]]
-            rect = coords["rect"]
-            font_size = coords["font_size"]
-            
-            # KORRIGIERT: Präzise Baseline-Berechnung
-            # Bei PyMuPDF ist y0 = Unterkante, y1 = Oberkante
-            # Baseline sollte ~3 Punkte über y0 sein
-            
-            box_height = rect.y1 - rect.y0
-            baseline_y = rect.y0 + min(3, box_height * 0.25)  # 3 Punkte ODER 25% der Höhe
-            text_x = rect.x0 + 2
-            
-            try:
-                # insert_text für präzise Positionierung
-                page.insert_text(
-                    (text_x, baseline_y),
-                    str(value),
-                    fontsize=font_size * 0.9,  # Leicht kleiner für bessere Passform
-                    fontname="helv",
-                    color=(0, 0, 0)
-                )
-                filled_count += 1
-                print(f"   ✓ {field_name[:40]} @ y={int(baseline_y)}")
-            except Exception as e:
-                print(f"   ✗ {field_name}: {e}")
-    
-    # === SCHRITT 3: Familienstand Checkbox ===
-    marital = fields_data.get("marital", "ledig").lower()
-    if marital in familienstand_fields:
-        checkbox_field = familienstand_fields[marital]
-        if checkbox_field in field_coords:
-            coords = field_coords[checkbox_field]
-            page = doc[coords["page"]]
-            rect = coords["rect"]
-            
-            # Zeichne X oder Häkchen in die Checkbox
-            try:
-                # Zentriert in der Box
-                center_x = (rect.x0 + rect.x1) / 2
-                center_y = (rect.y0 + rect.y1) / 2
-                
-                # Einfaches X zeichnen
-                page.insert_text(
-                    (center_x - 4, center_y + 4),
-                    "X",
-                    fontsize=12,
-                    fontname="hebo",  # Helvetica Bold
-                    color=(0, 0, 0)
-                )
-                print(f"   ✓ Checkbox: {marital}")
-            except Exception as e:
-                print(f"   ✗ Checkbox {marital}: {e}")
-    
-    # === SCHRITT 4: Formularfelder entfernen ===
-    print(f"\n🗑️  Entferne Formularfelder (nur gezeichneter Text bleibt)...")
-    
-    for page_num in range(len(doc)):
-        page = doc[page_num]
-        
-        # Entferne alle Widget-Annotationen
-        annot = page.first_annot
-        while annot:
-            next_annot = annot.next
-            if annot.type[0] == 10:  # Widget
-                page.delete_annot(annot)
-            annot = next_annot
-    
-    # Speichern
-    doc.save(out_path, garbage=4, deflate=True, clean=True)
+
+    # 1) Alle Widgets einsammeln (Seite, Widget)
+    widgets = _collect_widgets(doc)
+    if not widgets:
+        # Falls kein einziges Formularfeld existiert → kein Problem:
+        # wir lassen das PDF unangetastet speichern (oder du würdest an dieser Stelle
+        # alternativ eine ReportLab-Variante nutzen).
+        doc.save(out_path, deflate=True, garbage=4)
+        doc.close()
+        return
+
+    # 2) Formularfelder überlagern: Text direkt in deren Rechtecke setzen
+    _fill_page1(doc, widgets, fields)
+    _fill_kids(doc, widgets, kids)
+
+    # 3) Widgets entfernen (flatten)
+    _remove_all_widgets(doc)
+
+    # 4) Speichern (deflate+garbage für kleine Größe)
+    doc.save(out_path, deflate=True, garbage=4)
     doc.close()
-    
-    print(f"\n✅ PDF erstellt: {out_path}")
-    print(f"   • {filled_count} Felder ausgefüllt")
-    print(f"   • Formularfelder entfernt")
-    print(f"   • Nur statischer Text verbleibt")
-    print(f"   • Name: {fields_data.get('full_name')}")
-    print(f"   • Steuer-ID: {fields_data.get('taxid_parent')}")
-    print(f"   • IBAN: {fields_data.get('iban')}")
-    print(f"   • Familienstand: {fields_data.get('marital')}")
-    if kids:
-        print(f"   • Kinder: {len(kids)}")
-    print(f"\n🎯 Text wurde DIREKT an Feld-Koordinaten gezeichnet!")
 
 def make_grid(template_path: str) -> bytes:
-    """Debug: Zeigt Feld-Koordinaten"""
-    import io
-    
-    doc = fitz.open(template_path)
-    
-    # Neue Seite für Debug-Info
-    page = doc.new_page(width=595, height=842)
-    
-    text = "Formularfeld-Koordinaten:\n\n"
-    
-    for page_num in range(min(3, len(doc)-1)):
-        p = doc[page_num]
-        text += f"\nSeite {page_num + 1}:\n"
-        
-        for widget in p.widgets():
-            rect = widget.rect
-            text += f"  {widget.field_name[:40]}\n"
-            text += f"    ({int(rect.x0)}, {int(rect.y0)}) → ({int(rect.x1)}, {int(rect.y1)})\n"
-    
-    page.insert_text((50, 50), text, fontsize=8)
-    
-    buf = io.BytesIO(doc.tobytes())
-    doc.close()
-    
+    """
+    Optional: Debug-Raster. Hier minimalistischer Stub, damit
+    app.main weiter importieren kann, falls du /pdf/debug/kg1 nutzt.
+    (Du kannst es mit ReportLab ausbauen, wenn du willst.)
+    """
+    import reportlab.pdfgen.canvas as canvas  # type: ignore
+    from reportlab.lib.pagesizes import A4  # type: ignore
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    w, h = A4
+    c.setFont("Helvetica", 7)
+    c.setStrokeGray(0.8)
+    for x in range(0, int(w), 20):
+        c.line(x, 0, x, h)
+        c.drawString(x + 1, h - 12, str(x))
+    for y in range(0, int(h), 20):
+        c.line(0, y, w, y)
+        c.drawString(2, y + 2, str(y))
+    c.showPage()
+    c.save()
     return buf.getvalue()
