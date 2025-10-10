@@ -124,27 +124,25 @@ def fill_kindergeld(template_path: str, out_path: str, data: Dict[str, Any]) -> 
             rect = coords["rect"]
             font_size = coords["font_size"]
             
-            # Text einfügen - WICHTIG: An der RICHTIGEN Position
-            # Wir verschieben leicht nach unten, damit Text IM Feld ist
-            adjusted_rect = fitz.Rect(
-                rect.x0 + 2,  # Kleiner Abstand vom linken Rand
-                rect.y0,
-                rect.x1 - 2,
-                rect.y1
-            )
+            # KRITISCH: Text muss IN der Box sein, nicht darüber!
+            # Y-Koordinate: rect.y0 ist UNTEN, rect.y1 ist OBEN
+            # Wir wollen den Text an der BASELINE positionieren
+            
+            # Berechne die richtige Y-Position (leicht über dem Boden der Box)
+            baseline_y = rect.y0 + (font_size * 0.75)  # Baseline = 75% der Schriftgröße über dem Boden
+            text_x = rect.x0 + 2  # Kleiner Abstand vom linken Rand
             
             try:
-                page.insert_textbox(
-                    adjusted_rect,
+                # insert_text für präzise Positionierung
+                page.insert_text(
+                    (text_x, baseline_y),
                     str(value),
                     fontsize=font_size,
                     fontname="helv",
-                    color=(0, 0, 0),
-                    align=fitz.TEXT_ALIGN_LEFT,
-                    render_mode=0
+                    color=(0, 0, 0)
                 )
                 filled_count += 1
-                print(f"   ✓ {field_name[:50]}")
+                print(f"   ✓ {field_name[:50]} @ ({int(text_x)}, {int(baseline_y)})")
             except Exception as e:
                 print(f"   ✗ {field_name}: {e}")
     
