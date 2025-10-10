@@ -128,84 +128,129 @@ def map_data_to_kg1_fields(data: Dict[str, Any]) -> Dict[str, str]:
 
 def fill_kindergeld(template_path: str, out_path: str, data: Dict[str, Any]) -> None:
     """
-    Füllt KG1-Formular mit Daten aus.
+    Füllt KG1-Formular mit Daten aus - HYBRID mit ReportLab Overlay.
     
     Args:
         template_path: Pfad zum KG1-Template
         out_path: Pfad für ausgefülltes PDF
         data: {"fields": {...}, "kids": [...]}
     """
-    # PDF laden
-    reader = PdfReader(template_path)
-    writer = PdfWriter()
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.colors import black
     
+    fields_data = data.get("fields", {})
+    kids = data.get("kids", [])
+    
+    # Name aufteilen
+    vorname, nachname = _split_name(fields_data.get("full_name", ""))
+    taxid_parts = _split_taxid(fields_data.get("taxid_parent", ""))
+    
+    # PDF-Größe vom Template holen
+    reader = PdfReader(template_path)
     if reader.is_encrypted:
         reader.decrypt("")
     
-    # Alle Seiten kopieren
-    for page in reader.pages:
-        writer.add_page(page)
+    page = reader.pages[1]  # Seite 2 (0-basiert)
+    page_width = float(page.mediabox.width)
+    page_height = float(page.mediabox.height)
     
-    # Daten mappen
-    field_values = map_data_to_kg1_fields(data)
+    print(f"\n📝 Erstelle Overlay für KG1...")
     
-    print(f"\n📝 Fülle {len(field_values)} Felder aus...")
+    # Overlay erstellen
+    overlay_buf = io.BytesIO()
+    c = canvas.Canvas(overlay_buf, pagesize=(page_width, page_height))
     
-    # Felder befüllen
-    try:
-        if hasattr(writer, 'update_page_form_field_values'):
-            # Neuere PyPDF2 API
-            for page_num in range(len(writer.pages)):
-                writer.update_page_form_field_values(
-                    writer.pages[page_num],
-                    field_values
-                )
-        else:
-            # Ältere Methode - über Annotationen
-            filled_count = 0
-            for page in writer.pages:
-                if '/Annots' in page:
-                    for annotation in page['/Annots']:
-                        try:
-                            obj = annotation.get_object()
-                            field_name = obj.get('/T')
-                            if field_name and field_name in field_values:
-                                value = field_values[field_name]
-                                obj.update({
-                                    '/V': value,
-                                    '/AS': value
-                                })
-                                filled_count += 1
-                        except Exception as e:
-                            pass
-            print(f"   → {filled_count} Felder erfolgreich gefüllt")
-    except Exception as e:
-        print(f"⚠️  Warnung: {e}")
+    # KOORDINATEN (gemessen vom echten PDF)
+    # Y-Koordinaten von UNTEN nach OBEN
     
-    # WICHTIG: NeedAppearances Flag setzen (behebt Positionierungsprobleme)
-    try:
-        if '/AcroForm' in writer._root_object:
-            writer._root_object['/AcroForm'].update({
-                '/NeedAppearances': True
-            })
-    except Exception as e:
-        print(f"⚠️  Konnte NeedAppearances nicht setzen: {e}")
+    c.setFillColor(black)
+    c.setFont("Helvetica", 10)
+    
+    # Seite 2: Steuer-ID Kästen (oben)
+    c.drawString(120, 770, taxid_parts[0])   # Erste 2 Ziffern
+    c.drawString(185, 770, taxid_parts[1])   # Nächste 3
+    c.drawString(260, 770, taxid_parts[2])   # Nächste 3
+    c.drawString(335, 770, taxid_parts[3])   # Letzte 3
+    
+    # Name
+    c.drawString(105, 745, nachname)
+    
+    # Vorname
+    c.drawString(105, 720, vorname)
+    
+    # Geburtsdatum
+    c.drawString(105, 695, _fmt_date(fields_data.get("dob")))
+    
+    # Staatsangehörigkeit
+    c.drawString(485, 695, fields_data.get("citizenship", "deutsch"))
+    
+    # Anschrift
+    anschrift = f"{fields_data.get('addr_street', '')}, {fields_data.get('addr_plz', '')} {fields_data.get('addr_city', '')}"
+    c.drawString(105, 665, anschrift.strip(", "))
+    
+    # Familienstand - X bei richtigem Feld
+    marital = str(fields_data.get("marital", "ledig")).lower()
+    marital_positions = {
+        "ledig": (90, 630),
+        "verheiratet": (285, 630),
+        "geschieden": (285, 615),
+        "getrennt": (435, 615),
+        "verwitwet": (285, 600),
+    }
+    if marital in marital_positions:
+        x, y = marital_positions[marital]
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(x, y, "X")
+        c.setFont("Helvetica", 10)
+    
+    # IBAN (Punkt 3)
+    c.drawString(105, 465, _fmt_iban(fields_data.get("iban", "")))
+    
+    # Kontoinhaber = Antragsteller
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(90, 425, "X")
+    c.setFont("Helvetica", 10)
+    
+    # Seite wechseln für Kinder-Tabelle
+    c.showPage()
+    c.setPageSize((page_width, page_height))
+    c.setFont("Helvetica", 9)
+    
+    # Kinder in Tabelle (Seite 3)
+    if kids:
+        kid_y_positions = [635, 610, 585, 560, 535]  # Y-Positionen für Zeilen
+        for i, kid in enumerate(kids[:5]):
+            if i < len(kid_y_positions):
+                y = kid_y_positions[i]
+                c.drawString(105, y, kid.get("kid_name", ""))
+                c.drawString(345, y, _fmt_date(kid.get("kid_dob", "")))
+    
+    c.save()
+    overlay_buf.seek(0)
+    
+    # Overlay mit Template mergen
+    overlay_reader = PdfReader(overlay_buf)
+    template_reader = PdfReader(template_path)
+    
+    writer = PdfWriter()
+    
+    for i, template_page in enumerate(template_reader.pages):
+        if i < len(overlay_reader.pages):
+            template_page.merge_page(overlay_reader.pages[i])
+        writer.add_page(template_page)
     
     # Speichern
     with open(out_path, 'wb') as f:
         writer.write(f)
     
     print(f"✅ PDF erstellt: {out_path}")
-    fields = data.get("fields", {})
-    print(f"   Ausgefüllt:")
-    print(f"   • Name: {fields.get('full_name')}")
-    print(f"   • Geburtsdatum: {fields.get('dob')}")
-    print(f"   • Adresse: {fields.get('addr_street')}, {fields.get('addr_plz')} {fields.get('addr_city')}")
-    print(f"   • Steuer-ID: {fields.get('taxid_parent')}")
-    print(f"   • IBAN: {fields.get('iban')}")
-    print(f"   • Familienstand: {fields.get('marital')}")
-    if data.get("kids"):
-        print(f"   • Kinder: {len(data.get('kids', []))}")
+    print(f"   • Name: {fields_data.get('full_name')}")
+    print(f"   • Steuer-ID: {fields_data.get('taxid_parent')}")
+    print(f"   • Adresse: {anschrift}")
+    print(f"   • IBAN: {fields_data.get('iban')}")
+    print(f"   • Familienstand: {fields_data.get('marital')}")
+    if kids:
+        print(f"   • Kinder: {len(kids)}")
 
 def make_grid(template_path: str) -> bytes:
     """
