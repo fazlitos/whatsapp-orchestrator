@@ -182,6 +182,15 @@ def fill_kindergeld(template_path: str, out_path: str, data: Dict[str, Any]) -> 
     except Exception as e:
         print(f"⚠️  Warnung: {e}")
     
+    # WICHTIG: NeedAppearances Flag setzen (behebt Positionierungsprobleme)
+    try:
+        if '/AcroForm' in writer._root_object:
+            writer._root_object['/AcroForm'].update({
+                '/NeedAppearances': True
+            })
+    except Exception as e:
+        print(f"⚠️  Konnte NeedAppearances nicht setzen: {e}")
+    
     # Speichern
     with open(out_path, 'wb') as f:
         writer.write(f)
