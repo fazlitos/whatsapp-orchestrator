@@ -183,7 +183,7 @@ def fill_442(pdf_path: str, out_path: str, data: Dict[str, Any]) -> None:
         "staatsang": "TEXTFIELD.p0.x140.y125",
 
         # Anschrift (Fließtextblock):
-        "anschrift": "TEXTFIELD.p0.x22.y171",
+        "anschrift": "TEXTFIELD.p0.x22.y139",
 
         # Familienstand (Checkboxen-Blöcke, können leicht variieren)
         "fs_ledig":        "CHECKBOX.p0.x42.y146",
