@@ -150,15 +150,20 @@ def fill_kindergeld(template_path: str, out_path: str, data: Dict[str, Any]) -> 
     if reader.is_encrypted:
         reader.decrypt("")
     
-    page = reader.pages[1]  # Seite 2 (0-basiert)
+    page = reader.pages[1]  # Seite 2 im PDF (Index 1)
     page_width = float(page.mediabox.width)
     page_height = float(page.mediabox.height)
     
     print(f"\n📝 Erstelle Overlay für KG1...")
+    print(f"   PDF-Größe: {page_width} x {page_height}")
     
-    # Overlay erstellen
+    # Overlay erstellen (nur für Seite 2 = Index 1)
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=(page_width, page_height))
+    
+    # Leere erste Seite (damit Index stimmt)
+    c.showPage()
+    c.setPageSize((page_width, page_height))
     
     # KOORDINATEN (gemessen vom echten PDF)
     # Y-Koordinaten von UNTEN nach OBEN
@@ -190,53 +195,71 @@ def fill_kindergeld(template_path: str, out_path: str, data: Dict[str, Any]) -> 
     
     # Familienstand - X bei richtigem Feld
     marital = str(fields_data.get("marital", "ledig")).lower()
+    c.setFont("Helvetica-Bold", 14)
     marital_positions = {
-        "ledig": (90, 630),
-        "verheiratet": (285, 630),
-        "geschieden": (285, 615),
-        "getrennt": (435, 615),
-        "verwitwet": (285, 600),
+        "ledig": (78, 607),
+        "verheiratet": (330, 629),
+        "geschieden": (330, 607),
+        "getrennt": (465, 607),
+        "verwitwet": (330, 585),
     }
     if marital in marital_positions:
         x, y = marital_positions[marital]
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(x, y, "X")
-        c.setFont("Helvetica", 10)
-    
-    # IBAN (Punkt 3)
-    c.drawString(105, 465, _fmt_iban(fields_data.get("iban", "")))
-    
-    # Kontoinhaber = Antragsteller
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(90, 425, "X")
+        c.drawString(x, y, "☑")  # Checkbox Symbol
+        print(f"   → Familienstand '{marital}' bei ({x}, {y})")
     c.setFont("Helvetica", 10)
     
-    # Seite wechseln für Kinder-Tabelle
-    c.showPage()
-    c.setPageSize((page_width, page_height))
+    # IBAN (Punkt 3 - ganz unten)
+    iban_formatted = _fmt_iban(fields_data.get("iban", ""))
     c.setFont("Helvetica", 9)
+    c.drawString(90, 232, iban_formatted)  # IBAN Position
+    print(f"   → IBAN: {iban_formatted}")
+    c.setFont("Helvetica", 10)
     
-    # Kinder in Tabelle (Seite 3)
-    if kids:
-        kid_y_positions = [635, 610, 585, 560, 535]  # Y-Positionen für Zeilen
-        for i, kid in enumerate(kids[:5]):
-            if i < len(kid_y_positions):
-                y = kid_y_positions[i]
-                c.drawString(105, y, kid.get("kid_name", ""))
-                c.drawString(345, y, _fmt_date(kid.get("kid_dob", "")))
+    # Kontoinhaber = Antragsteller Checkbox
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(78, 250, "☑")
     
     c.save()
     overlay_buf.seek(0)
     
-    # Overlay mit Template mergen
+    # Zweites Overlay für Seite 3 (Kinder)
+    overlay_buf2 = io.BytesIO()
+    c2 = canvas.Canvas(overlay_buf2, pagesize=(page_width, page_height))
+    
+    # Zwei leere Seiten (damit wir bei Index 2 = Seite 3 sind)
+    c2.showPage()
+    c2.showPage()
+    c2.setPageSize((page_width, page_height))
+    c2.setFont("Helvetica", 9)
+    
+    # Kinder in Tabelle auf Seite 3
+    if kids:
+        kid_y_positions = [655, 630, 605, 580, 555]
+        for i, kid in enumerate(kids[:5]):
+            if i < len(kid_y_positions):
+                y = kid_y_positions[i]
+                c2.drawString(90, y, kid.get("kid_name", ""))
+                c2.drawString(350, y, _fmt_date(kid.get("kid_dob", "")))
+                print(f"   → Kind {i+1}: {kid.get('kid_name')}")
+    
+    c2.save()
+    overlay_buf2.seek(0)
+    
+    # Overlays mit Template mergen
     overlay_reader = PdfReader(overlay_buf)
+    overlay_reader2 = PdfReader(overlay_buf2)
     template_reader = PdfReader(template_path)
     
     writer = PdfWriter()
     
     for i, template_page in enumerate(template_reader.pages):
-        if i < len(overlay_reader.pages):
+        # Overlay 1 für Seite 2 (Index 1)
+        if i < len(overlay_reader.pages) and i == 1:
             template_page.merge_page(overlay_reader.pages[i])
+        # Overlay 2 für Seite 3 (Index 2)
+        if i < len(overlay_reader2.pages) and i == 2 and kids:
+            template_page.merge_page(overlay_reader2.pages[i])
         writer.add_page(template_page)
     
     # Speichern
