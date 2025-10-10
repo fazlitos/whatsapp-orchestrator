@@ -1,259 +1,356 @@
 # app/pdf/filler.py
-# ---------------------------------------------------------------------
-# KG1-Füller (robust): Liest Widget-Rechtecke mit PyMuPDF (fitz),
-# schreibt Text direkt in die Rechtecke (insert_textbox) und entfernt
-# danach die Widgets -> statischer Text an exakt der Feldposition.
-# ---------------------------------------------------------------------
+"""
+KG1 PDF Filler – zeichnet Text direkt auf die Feldkoordinaten (Baseline-korrekt)
+Voraussetzung: PyMuPDF (fitz)
+    pip install PyMuPDF
+"""
 
 from __future__ import annotations
-from typing import Dict, Any, List, Optional, Tuple
-import io
 import re
+from typing import Dict, Any, Iterable, Optional, Tuple
+
 import fitz  # PyMuPDF
 
-BANNER = "📄 KG1 filler: PyMuPDF overlay mode (widgets->static text)"
+
+# ------------------------------------------------------------
+# Hilfen für robustes Matching & Zeichnen
+# ------------------------------------------------------------
 
 def _norm(s: str) -> str:
-    return re.sub(r"\s+", " ", s.strip().lower())
+    return re.sub(r"\s+", " ", s or "").strip().lower()
 
-def _compose_address(fields: Dict[str, str]) -> str:
-    street = fields.get("addr_street", "")
-    plz = fields.get("addr_plz", "")
-    city = fields.get("addr_city", "")
-    parts = [p for p in [street, f"{plz} {city}".strip()] if p]
-    return ", ".join(parts)
 
-def _iban_compact(s: str) -> str:
-    return re.sub(r"\s+", "", s or "")
+def _find_widget(
+    widgets: Iterable[fitz.Widget],
+    *needles: str,
+    contains_all: bool = True
+) -> Optional[fitz.Widget]:
+    """
+    Findet ein Widget, dessen Feldname alle (oder eines der) Teilstücke enthält.
+    Vergleicht 'case-insensitive'.
+    """
+    needles = tuple(_norm(n) for n in needles if n)
+    for w in widgets:
+        name = _norm(getattr(w, "field_name", "") or "")
+        if not name:
+            continue
+        if contains_all:
+            if all(n in name for n in needles):
+                return w
+        else:
+            if any(n in name for n in needles):
+                return w
+    return None
 
-def _text(v: Any) -> str:
-    return "" if v is None else str(v)
 
-def _collect_widgets(doc: fitz.Document) -> List[Tuple[int, fitz.Widget]]:
-    """Alle Widgets (Formularfelder) sammeln, inkl. Page-Index."""
-    out: List[Tuple[int, fitz.Widget]] = []
-    for i in range(len(doc)):
-        page = doc[i]
-        for w in page.widgets() or []:
-            out.append((i, w))
-    return out
-
-def _find_widget(widgets: List[Tuple[int, fitz.Widget]], needle: str) -> Optional[Tuple[int, fitz.Widget]]:
-    """Widget per Teilstring des Feldnamens finden (case-insensitive)."""
-    n = _norm(needle)
-    best: Optional[Tuple[int, fitz.Widget]] = None
-    for pidx, w in widgets:
-        name = w.field_name or ""
-        if n in _norm(name):
-            best = (pidx, w)
-            break
-    return best
-
-def _draw_text_in_widget_rect(
+def _draw_in_rect(
     page: fitz.Page,
     rect: fitz.Rect,
     text: str,
-    fontsize: float = 10.0,
-    pad: float = 1.5,
-    bold: bool = False,
+    size: float = 10.0,
+    font: str = "helv",
+    pad_x: float = 2.0,
+    color: Tuple[float, float, float] = (0, 0, 0),
 ):
     """
-    Text „sauber“ in die Rechteckbox schreiben.
-    insert_textbox berücksichtigt Baseline/Umbruch selbst.
+    Zeichnet Text baseline-korrekt in ein Formularrechteck.
+    Baseline ≈ untere Kante minus ~Descent (0.22 * Schriftgröße).
     """
     if not text:
         return
-    r = fitz.Rect(rect)
-    # leicht innen zeichnen
-    r.x0 += pad
-    r.x1 -= pad
-    r.y0 += pad
-    r.y1 -= pad
-    fontname = "helv" if not bold else "helvB"
-    page.insert_textbox(r, text, fontsize=fontsize, fontname=fontname, align=0)
+    baseline_y = rect.y1 - max(2.0, 0.22 * size)
+    x = rect.x0 + pad_x
+    page.insert_text(
+        fitz.Point(x, baseline_y),
+        text,
+        fontsize=size,
+        fontname=font,
+        color=color,
+    )
 
-def _draw_checkbox_mark(page: fitz.Page, rect: fitz.Rect, mark: str = "X", fontsize: float = 11.0):
-    """
-    Ein X/✓ mittig in die Checkbox-Box setzen (falls die Checkbox-Widgets
-    selbst keine Appearance-Streams haben).
-    """
-    cx = (rect.x0 + rect.x1) / 2.0
-    cy = (rect.y0 + rect.y1) / 2.0
-    # Position leicht nach links/unten justieren
-    page.insert_text((cx - fontsize * 0.35, cy + fontsize * 0.35), mark, fontsize=fontsize, fontname="helvB")
 
-def _remove_all_widgets(doc: fitz.Document):
-    """Alle Widgets aus dem Dokument entfernen (wir haben ja statischen Text gezeichnet)."""
-    for i in range(len(doc)):
-        page = doc[i]
-        for w in list(page.widgets() or []):
-            w.remove_from_page()
-
-def _fill_page1(
-    doc: fitz.Document,
-    widgets: List[Tuple[int, fitz.Widget]],
-    fields: Dict[str, Any],
+def _draw_x_checkbox(
+    page: fitz.Page,
+    rect: fitz.Rect,
+    size_factor: float = 0.75,
+    color: Tuple[float, float, float] = (0, 0, 0),
+    width: float = 1.0,
 ):
     """
-    Seite 1 (in deinem PDF ist es oft 'Seite1'): Name, Geburtsdatum, Staatsangehörigkeit,
-    Familienstand, Anschrift, IBAN etc.
-    Die Feldnamen stammen aus deiner Liste (topmostSubform[...]...Name-Antragsteller, etc.).
-    Wir suchen fuzzy (per Teilstring) – robust gegen kleine Variationen.
+    Zeichnet ein 'X' in eine Checkbox (ohne Formular-Widget zu verwenden).
     """
-    # Name Antragsteller
-    tgt = _find_widget(widgets, "Name-Antragsteller")
-    if tgt:
-        pidx, w = tgt
-        page = doc[pidx]
-        _draw_text_in_widget_rect(page, w.rect, _text(fields.get("full_name", "")), fontsize=10)
+    w = rect.width * size_factor
+    h = rect.height * size_factor
+    cx = (rect.x0 + rect.x1) / 2
+    cy = (rect.y0 + rect.y1) / 2
+    r = fitz.Rect(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
 
-    # Geburtsdatum Antragsteller
-    tgt = _find_widget(widgets, "Geburtsdatum-Antragsteller")
-    if tgt:
-        pidx, w = tgt
-        doc[pidx].insert_textbox(w.rect, _text(fields.get("dob", "")), fontsize=10, fontname="helv")
+    page.draw_line(fitz.Point(r.x0, r.y0), fitz.Point(r.x1, r.y1), color=color, width=width)
+    page.draw_line(fitz.Point(r.x0, r.y1), fitz.Point(r.x1, r.y0), color=color, width=width)
 
-    # Staatsangehörigkeit
-    for key in ("Staatsangehörigkeit", "Staatsangehoerigkeit"):
-        tgt = _find_widget(widgets, key)
-        if tgt:
-            pidx, w = tgt
-            doc[pidx].insert_textbox(w.rect, _text(fields.get("citizenship", "")), fontsize=10, fontname="helv")
-            break
 
-    # Familienstand: ledig / verheiratet / geschieden / verwitwet
-    marital = _norm(_text(fields.get("marital", "")))
-    if marital:
-        # Checkbox-Ziele suchen
-        # Die Feldnamen in deinem PDF sahen in etwa so aus:
-        # ...Familienstand[0].ledig[0], ...verheiratet[0], ...geschieden[0], ...verwitwet[0]
-        opts = {
-            "ledig": "ledig",
-            "verheiratet": "verheiratet",
-            "geschieden": "geschieden",
-            "verwitwet": "verwitwet",
-            "dauernd getrennt": "dauernd getrennt lebend",
-        }
-        chosen = None
-        for k, label in opts.items():
-            if k in marital:
-                chosen = label
-                break
-        if chosen:
-            tgt = _find_widget(widgets, chosen)
-            if tgt:
-                pidx, w = tgt
-                _draw_checkbox_mark(doc[pidx], w.rect, "X", fontsize=11)
+def _outline_debug(page: fitz.Page, rect: fitz.Rect):
+    """Optionales Debug – Umrandung + Baseline einzeichnen."""
+    page.draw_rect(rect, color=(1, 0, 0), width=0.6)
+    baseline_y = rect.y1 - 0.22 * 10
+    page.draw_line(
+        fitz.Point(rect.x0, baseline_y),
+        fitz.Point(rect.x1, baseline_y),
+        color=(0, 0, 1),
+        width=0.4,
+    )
 
-    # Anschrift (als eine Zeile im Feld „Anschrift-Antragsteller“)
-    tgt = _find_widget(widgets, "Anschrift-Antragsteller")
-    if tgt:
-        pidx, w = tgt
-        doc[pidx].insert_textbox(w.rect, _compose_address(fields), fontsize=10, fontname="helv")
 
-    # IBAN (unter Zahlungsweg / Punkt 3)
-    tgt = _find_widget(widgets, "IBAN")
-    if tgt:
-        pidx, w = tgt
-        doc[pidx].insert_textbox(w.rect, _iban_compact(fields.get("iban", "")), fontsize=10, fontname="helv")
+# ------------------------------------------------------------
+# Feld-Hinweise für KG1 (robust via substring matching)
+# (Die Namen stammen aus deiner Feldliste, werden aber
+# über contains-Matches gefunden, damit kleine Abweichungen
+# nicht stören.)
+# ------------------------------------------------------------
 
-    # Steuer-ID (viele Felder sind in Kästchen aufgeteilt, wir schreiben einmal in die Gesamtbox,
-    # wenn es sie gibt; ansonsten ignorieren wir die Kästchen – i.d.R. akzeptiert die Behörde beides)
-    for needle in [
-        "Steueridentifikationsnummer Antragsteller",
-        "Steuer-ID-Antragsteller",
-        "Steuer-ID Antragsteller",
-    ]:
-        tgt = _find_widget(widgets, needle)
-        if tgt:
-            pidx, w = tgt
-            doc[pidx].insert_textbox(w.rect, _text(fields.get("taxid_parent", "")), fontsize=10, fontname="helv")
-            break
+KG1_HINTS = {
+    # Seite 2 (Antragsteller: Name/Adresse/DOB/Staatsangehörigkeit …)
+    "full_name": (
+        "seite1", "punkt-1", "pkt-1-zeile-1", "name-antragsteller"
+    ),
+    "familienname": (
+        "seite1", "familienname", "antragsteller"
+    ),
+    "vorname": (
+        "seite1", "vorname", "antragsteller"
+    ),
+    "dob": (
+        "seite1", "geburtsdatum", "antragsteller"
+    ),
+    "geburtsort": (
+        "seite1", "geburtsort", "antragsteller"
+    ),
+    "citizenship": (
+        "seite1", "staatsangehörigkeit"
+    ),
+    "address": (
+        "seite1", "anschrift", "antragsteller"
+    ),
+    "iban": (
+        "seite1", "punkt-3", "iban"
+    ),
 
-def _fill_kids(
-    doc: fitz.Document,
-    widgets: List[Tuple[int, fitz.Widget]],
-    kids: List[Dict[str, Any]],
-):
+    # Steuer-ID – einige Formulare haben mehrere Kästchen / Segmente
+    # Wir sammeln beliebige Widgets mit 'steuer' innerhalb Seite1.
+    "taxid_any": (
+        "seite1", "steuer"
+    ),
+
+    # Familienstand – Checkboxen (ledig / verheiratet / geschieden / verwitwet / getrennt)
+    "ms_ledig": (
+        "seite1", "familienstand", "ledig"
+    ),
+    "ms_verheiratet": (
+        "seite1", "familienstand", "verheiratet"
+    ),
+    "ms_geschieden": (
+        "seite1", "familienstand", "geschieden"
+    ),
+    "ms_verwitwet": (
+        "seite1", "familienstand", "verwitwet"
+    ),
+    "ms_getrennt": (
+        "seite1", "familienstand", "dauernd", "getrennt"
+    ),
+    # ggf. eingetragene Lebenspartnerschaft:
+    "ms_eingetragen": (
+        "seite1", "eingetragener", "lebenspartnerschaft"
+    ),
+}
+
+MARITAL_MAP = {
+    "ledig": "ms_ledig",
+    "verheiratet": "ms_verheiratet",
+    "geschieden": "ms_geschieden",
+    "verwitwet": "ms_verwitwet",
+    "dauernd_getrennt": "ms_getrennt",
+    "getrennt": "ms_getrennt",
+    "eingetragen": "ms_eingetragen",
+    "lebenspartnerschaft": "ms_eingetragen",
+}
+
+
+# ------------------------------------------------------------
+# Öffentliche API
+# ------------------------------------------------------------
+
+def list_pdf_fields(template_path: str) -> Dict[str, Any]:
     """
-    Sehr einfache Variante: wir tragen (falls vorhanden) Kind #1 in die
-    Felder „Vorname Kind“, „Geburtsdatum Kind“ ein (so wie sie im PDF heißen).
-    Du kannst das Mapping leicht erweitern, wenn die exakten Feldnamen feststehen.
+    Gibt alle Formularfelder (Namen + Seite + Rect) zurück.
+    Nützlich für Debug / Kontrolle.
     """
-    if not kids:
-        return
-    k = kids[0]
-    # Name Kind
-    for needle in ["Name des Kindes", "Name-Kind", "Vorname-Kind", "Vorname des Kindes"]:
-        tgt = _find_widget(widgets, needle)
-        if tgt:
-            pidx, w = tgt
-            doc[pidx].insert_textbox(w.rect, _text(k.get("kid_name", "")), fontsize=10, fontname="helv")
-            break
-    # Geburtsdatum Kind
-    for needle in ["Geburtsdatum des Kindes", "Geburtsdatum-Kind"]:
-        tgt = _find_widget(widgets, needle)
-        if tgt:
-            pidx, w = tgt
-            doc[pidx].insert_textbox(w.rect, _text(k.get("kid_dob", "")), fontsize=10, fontname="helv")
-            break
+    out: Dict[str, Any] = {"pages": []}
+    doc = fitz.open(template_path)
+    try:
+        for p in range(len(doc)):
+            page = doc[p]
+            arr = []
+            for w in page.widgets():
+                arr.append({
+                    "name": w.field_name,
+                    "type": getattr(w, "field_type", None),
+                    "rect": [w.rect.x0, w.rect.y0, w.rect.x1, w.rect.y1],
+                })
+            out["pages"].append({"index": p, "widgets": arr})
+    finally:
+        doc.close()
+    return out
 
-def fill_kindergeld(template_path: str, out_path: str, data: Dict[str, Any]) -> None:
+
+def fill_kindergeld(
+    template_path: str,
+    output_path: str,
+    payload: Dict[str, Any],
+    *,
+    debug_outline: bool = False
+) -> None:
     """
-    Hauptfunktion, die dein /make-pdf aufruft.
-    Erwartet payload-Struktur:
-      {
-        "fields": {...},
-        "kids": [ {...}, ... ]
+    Füllt das KG1-PDF, indem Text baseline-korrekt auf die
+    Koordinaten der Formularfelder gezeichnet wird.
+
+    payload erwartet:
+    {
+      "fields": {
+        "full_name": "...",
+        "familienname": "...",      # optional
+        "vorname": "...",           # optional
+        "dob": "TT.MM.JJJJ",
+        "geburtsort": "...",        # optional
+        "citizenship": "deutsch",
+        "addr_street": "...",
+        "addr_plz": "...",
+        "addr_city": "...",
+        "taxid_parent": "11-stellig",
+        "iban": "DE..."
+        "marital": "ledig|verheiratet|geschieden|verwitwet|getrennt|eingetragen"
       }
+    }
     """
-    print(BANNER)
+    data = (payload or {}).get("fields", {}) or {}
 
-    fields: Dict[str, Any] = (data or {}).get("fields", {}) or {}
-    kids: List[Dict[str, Any]] = (data or {}).get("kids", []) or []
+    # Adresse zusammensetzen (einige KG1 haben 1 Feld für Anschrift)
+    address = " ".join(
+        s for s in [
+            data.get("addr_street", ""),
+            f"{data.get('addr_plz', '')} {data.get('addr_city', '')}".strip()
+        ] if s
+    ).strip()
+
+    # Steuer-ID ggf. segmentieren (manche Formulare haben mehrere Kästchen)
+    taxid = re.sub(r"\D+", "", data.get("taxid_parent", "") or "")
 
     doc = fitz.open(template_path)
+    try:
+        # Seite 2: Index 1 (0-basiert)
+        page = doc[1]
+        widgets = list(page.widgets())
 
-    # 1) Alle Widgets einsammeln (Seite, Widget)
-    widgets = _collect_widgets(doc)
-    if not widgets:
-        # Falls kein einziges Formularfeld existiert → kein Problem:
-        # wir lassen das PDF unangetastet speichern (oder du würdest an dieser Stelle
-        # alternativ eine ReportLab-Variante nutzen).
-        doc.save(out_path, deflate=True, garbage=4)
+        def put_by_hint(hint_key: str, text: str, size: float = 10.0):
+            if not text:
+                return
+            needles = KG1_HINTS.get(hint_key)
+            if not needles:
+                return
+            w = _find_widget(widgets, *needles, contains_all=True)
+            if not w:
+                return
+            if debug_outline:
+                _outline_debug(page, w.rect)
+            _draw_in_rect(page, w.rect, text, size=size)
+
+        # 1) Name – Variante A: ein kombiniertes Feld ("Name-Antragsteller")
+        if data.get("full_name"):
+            put_by_hint("full_name", data["full_name"], size=10.0)
+        else:
+            # Variante B: getrennte Felder (Familienname / Vorname)
+            if data.get("familienname"):
+                put_by_hint("familienname", data["familienname"], size=10.0)
+            if data.get("vorname"):
+                put_by_hint("vorname", data["vorname"], size=10.0)
+
+        # 2) Geburtstag / Geburtsort / Staatsangehörigkeit
+        put_by_hint("dob", data.get("dob", ""), size=10.0)
+        put_by_hint("geburtsort", data.get("geburtsort", ""), size=10.0)
+        put_by_hint("citizenship", data.get("citizenship", ""), size=10.0)
+
+        # 3) Anschrift
+        if address:
+            put_by_hint("address", address, size=10.0)
+
+        # 4) IBAN
+        if data.get("iban"):
+            put_by_hint("iban", data["iban"], size=10.0)
+
+        # 5) Steuer-ID – versuche mehrere Felder zu füllen, falls vorhanden
+        if taxid:
+            # alle Widgets mit 'steuer' auf Seite 2
+            steuer_widgets = [
+                w for w in widgets
+                if "steuer" in _norm(getattr(w, "field_name", ""))
+            ]
+            if steuer_widgets:
+                # Wenn einzelne Kästchen, fülle von links nach rechts jeweils 1–3 Zeichen
+                # (hier einfach 1 pro Feld – falls dein Formular Segmente à 2/3 Zeichen hat,
+                # kannst du hier die Logik anpassen)
+                for i, w in enumerate(sorted(steuer_widgets, key=lambda x: x.rect.x0)):
+                    if i >= len(taxid):
+                        break
+                    if debug_outline:
+                        _outline_debug(page, w.rect)
+                    _draw_in_rect(page, w.rect, taxid[i], size=10.0)
+
+        # 6) Familienstand – Checkboxen
+        marital = (data.get("marital") or "").strip().lower()
+        if marital:
+            # Normalisieren
+            key = "eingetragen" if "lebenspartner" in marital else marital.replace(" ", "_")
+            hint = MARITAL_MAP.get(key)
+            if hint:
+                needles = KG1_HINTS.get(hint)
+                cb = _find_widget(widgets, *needles, contains_all=True) if needles else None
+                if cb:
+                    if debug_outline:
+                        _outline_debug(page, cb.rect)
+                    _draw_x_checkbox(page, cb.rect, size_factor=0.7)
+
+        # Tipp: Wenn Widgets störend sind (sichtbare Frames/Hintergründe),
+        # kann man sie entfernen, nachdem der Text gezeichnet wurde:
+        # for w in list(page.widgets()):
+        #     page.delete_widget(w)
+
+        doc.save(output_path)
+    finally:
         doc.close()
-        return
 
-    # 2) Formularfelder überlagern: Text direkt in deren Rechtecke setzen
-    _fill_page1(doc, widgets, fields)
-    _fill_kids(doc, widgets, kids)
 
-    # 3) Widgets entfernen (flatten)
-    _remove_all_widgets(doc)
-
-    # 4) Speichern (deflate+garbage für kleine Größe)
-    doc.save(out_path, deflate=True, garbage=4)
-    doc.close()
-
-def make_grid(template_path: str) -> bytes:
-    """
-    Optional: Debug-Raster. Hier minimalistischer Stub, damit
-    app.main weiter importieren kann, falls du /pdf/debug/kg1 nutzt.
-    (Du kannst es mit ReportLab ausbauen, wenn du willst.)
-    """
-    import reportlab.pdfgen.canvas as canvas  # type: ignore
-    from reportlab.lib.pagesizes import A4  # type: ignore
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=A4)
-    w, h = A4
-    c.setFont("Helvetica", 7)
-    c.setStrokeGray(0.8)
-    for x in range(0, int(w), 20):
-        c.line(x, 0, x, h)
-        c.drawString(x + 1, h - 12, str(x))
-    for y in range(0, int(h), 20):
-        c.line(0, y, w, y)
-        c.drawString(2, y + 2, str(y))
-    c.showPage()
-    c.save()
-    return buf.getvalue()
+# ------------------------------------------------------------
+# Manuelle Kurztests (lokal ausführen, wenn gewünscht)
+# ------------------------------------------------------------
+if __name__ == "__main__":
+    # Beispiel-Nutzung
+    sample = {
+        "fields": {
+            "full_name": "Max Mustermann",
+            # Alternativ:
+            # "familienname": "Mustermann",
+            # "vorname": "Max",
+            "dob": "01.01.1990",
+            "geburtsort": "Berlin",
+            "citizenship": "deutsch",
+            "addr_street": "Teststraße 1",
+            "addr_plz": "10115",
+            "addr_city": "Berlin",
+            "taxid_parent": "12345678901",
+            "iban": "DE89370400440532013000",
+            "marital": "ledig",
+        }
+    }
+    tpl = "app/pdf/templates/kg1.pdf"
+    out = "/tmp/kg1-filled.pdf"
+    fill_kindergeld(tpl, out, sample, debug_outline=False)
+    print("✅ PDF erstellt:", out)
