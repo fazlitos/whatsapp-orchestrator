@@ -13,7 +13,7 @@ FORM_GRAY = HexColor('#F0F0F0')
 LINE_COLOR = HexColor('#333333')
 HEADER_BG = HexColor('#E8E8E8')
 
-def draw_box(c, x, y, width, height, label="", value="", font_size=10):
+def draw_box(c, x, y, width, height, label="", value="", font_size=8):
     """Zeichnet eine Box mit Label und Wert"""
     # Box-Rahmen
     c.setStrokeColor(LINE_COLOR)
