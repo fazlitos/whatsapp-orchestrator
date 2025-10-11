@@ -1,6 +1,7 @@
-# app/pdf/generator.py
+# app/pdf/filler.py
 """
 Kindergeld PDF Generator - Exakte Nachbildung des Original-Formulars
+Mit Ehepartner-Sektion
 """
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
@@ -152,8 +153,6 @@ def create_kindergeld_pdf(out_path: str, data: Dict[str, Any]) -> None:
     # Staatsangehörigkeit
     draw_box(c, 375, y_pos, 180, 20, "Staatsangehörigkeit", fields.get("citizenship", ""))
     
-    y_pos -= 25
-    
     # Anschrift (große Box)
     y_pos -= 24  # Box perfekt positioniert
     addr = f"{fields.get('addr_street', '')}, {fields.get('addr_plz', '')} {fields.get('addr_city', '')}"
@@ -193,16 +192,57 @@ def create_kindergeld_pdf(out_path: str, data: Dict[str, Any]) -> None:
     
     y_pos -= 50
     
-    # === SEKTION 2: EHEPARTNER (vereinfacht) ===
+    # === SEKTION 2: EHEPARTNER ===
     draw_section_header(c, 40, y_pos, width - 80, 2, 
                        "Angaben zum/zur Ehepartner(in) bzw. eingetragenen Lebenspartner(in)")
     
-    y_pos -= 30
-    c.setFont("Helvetica", 8)
-    c.setFillColorRGB(0.5, 0.5, 0.5)
-    c.drawString(45, y_pos, "(Bitte im Original-Formular ausfüllen)")
+    y_pos -= 25
     
-    y_pos -= 35
+    # Ehepartner Name
+    partner_name = fields.get("partner_name", "")
+    if partner_name:
+        # Name aufteilen
+        partner_parts = partner_name.split(maxsplit=1)
+        partner_vorname = partner_parts[0] if partner_parts else ""
+        partner_nachname = partner_parts[1] if len(partner_parts) > 1 else ""
+        
+        # Familienname
+        draw_box(c, 40, y_pos, 180, 20, "Familienname", partner_nachname)
+        
+        # Vorname
+        draw_box(c, 225, y_pos, 180, 20, "Vorname", partner_vorname)
+        
+        # Titel
+        draw_box(c, 410, y_pos, 145, 20, "Titel", "")
+        
+        y_pos -= 25
+        
+        # Geburtsdatum
+        draw_box(c, 40, y_pos, 100, 20, "Geburtsdatum", fields.get("partner_dob", ""))
+        
+        # Staatsangehörigkeit
+        draw_box(c, 145, y_pos, 160, 20, "Staatsangehörigkeit", fields.get("partner_citizenship", ""))
+        
+        # Geburtsname
+        draw_box(c, 310, y_pos, 245, 20, "ggf. Geburtsname und Familienname aus früherer Ehe", "")
+        
+        y_pos -= 25
+        
+        # Anschrift (wenn abweichend)
+        partner_addr = fields.get("partner_address", "")
+        if partner_addr:
+            draw_box(c, 40, y_pos, 515, 20, 
+                    "Anschrift, wenn abweichend von antragstellender Person", 
+                    partner_addr)
+            y_pos -= 25
+    else:
+        # Keine Ehepartner-Daten
+        c.setFont("Helvetica", 8)
+        c.setFillColorRGB(0.5, 0.5, 0.5)
+        c.drawString(45, y_pos, "(Keine Angaben zum Ehepartner)")
+        y_pos -= 15
+    
+    y_pos -= 20
     
     # === SEKTION 3: ZAHLUNGSWEG ===
     draw_section_header(c, 40, y_pos, width - 80, 3, "Angaben zum Zahlungsweg")
@@ -360,10 +400,13 @@ if __name__ == "__main__":
             "addr_city": "Berlin",
             "taxid_parent": "12345678901",
             "iban": "DE89370400440532013000",
-            "marital": "ledig",
+            "marital": "verheiratet",
             "citizenship": "deutsch",
             "employment": "angestellt",
-            "start_month": "01.2024"
+            "start_month": "01.2024",
+            "partner_name": "Anna Mustermann",
+            "partner_dob": "15.05.1992",
+            "partner_citizenship": "deutsch"
         },
         "kids": [
             {
