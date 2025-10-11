@@ -163,10 +163,10 @@ def create_kindergeld_pdf(out_path: str, data: Dict[str, Any]) -> None:
     c.setLineWidth(0.5)
     c.rect(40, y_pos, 515, 45)  # Höhe 45 statt 30
     
-    # Label (klein oben)
+    # Label (klein, tiefer als vorher)
     c.setFont("Helvetica", 7)
     c.setFillColorRGB(0.4, 0.4, 0.4)
-    c.drawString(42, y_pos + 38, "Anschrift (Straße/Platz, Hausnummer, Postleitzahl, Wohnort, Staat)")
+    c.drawString(42, y_pos + 32, "Anschrift (Straße/Platz, Hausnummer, Postleitzahl, Wohnort, Staat)")
     
     # Wert (klein in der Mitte)
     c.setFont("Helvetica", 8)
