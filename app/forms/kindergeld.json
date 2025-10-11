@@ -10,10 +10,14 @@
     "marital",
     "citizenship",
     "employment",
-    "start_month"
+    "start_month",
+    "partner_name",
+    "partner_dob",
+    "partner_citizenship"
   ],
   "types": {
     "dob": "date",
+    "partner_dob": "date",
     "addr_plz": "plz",
     "iban": "iban",
     "taxid_parent": "taxid",
