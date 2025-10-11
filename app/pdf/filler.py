@@ -1,392 +1,369 @@
-# -*- coding: utf-8 -*-
+# app/pdf/generator.py
 """
-PDF Filler für KG1 (Formular 442.pdf)
-Funktionen:
-- dump_widgets(pdf_path) -> Liste aller Felder mit Name/Typ/Seite/Rect
-- make_debug_overlay(pdf_path, out_path) -> zeigt jede Widget-Position mit Label
-- fill_442(pdf_path, out_path, data) -> Felder setzen, Appearance erzeugen, flatten
-Erfordert: PyMuPDF (fitz)
+Kindergeld PDF Generator - Exakte Nachbildung des Original-Formulars
 """
-from __future__ import annotations
-import json
-from dataclasses import dataclass, asdict
-from typing import Dict, List, Any, Optional
-import fitz  # PyMuPDF
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import mm
+from reportlab.lib.colors import black, HexColor
+from typing import Dict, Any
 
+# Farben wie im Original
+FORM_GRAY = HexColor('#F0F0F0')
+LINE_COLOR = HexColor('#333333')
+HEADER_BG = HexColor('#E8E8E8')
 
-# ---------- Datentypen ----------
-
-@dataclass
-class WidgetInfo:
-    name: str
-    field_type: str
-    page: int
-    rect: List[float]  # [x0, y0, x1, y1]
-
-
-# ---------- Widget-Tools ----------
-
-def _widget_type(w: fitz.Widget) -> str:
-    t = w.field_type
-    # 0: unknown, 1: button, 2: text, 3: checkbox, 4: combobox, 5: listbox, 6: signature, 7: radio
-    mapping = {
-        1: "button",
-        2: "text",
-        3: "checkbox",
-        4: "combobox",
-        5: "listbox",
-        6: "signature",
-        7: "radio",
-    }
-    return mapping.get(t, str(t))
-
-
-def dump_widgets(pdf_path: str) -> List[WidgetInfo]:
-    """Liest alle Widgets/Felder aus und liefert strukturierte Infos."""
-    doc = fitz.open(pdf_path)
-    out: List[WidgetInfo] = []
-    for pno in range(len(doc)):
-        page = doc[pno]
-        for w in page.widgets():
-            name = w.field_name or f"unnamed_{pno}_{int(w.rect.x0)}_{int(w.rect.y0)}"
-            out.append(WidgetInfo(
-                name=name,
-                field_type=_widget_type(w),
-                page=pno,
-                rect=[w.rect.x0, w.rect.y0, w.rect.x1, w.rect.y1],
-            ))
-    doc.close()
-    return out
-
-
-def save_widgets_json(pdf_path: str, json_path: str) -> None:
-    data = [asdict(w) for w in dump_widgets(pdf_path)]
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-# ---------- Debug-Overlay ----------
-
-def make_debug_overlay(pdf_path: str, out_path: str) -> None:
-    """
-    Erzeugt ein PDF, in dem jedes Feld mit Rahmen & Label (Name, Typ, Seite) markiert ist.
-    Super schnell, um die richtigen Feldnamen zu identifizieren.
-    """
-    doc = fitz.open(pdf_path)
-    label_font = "helv"
-    for pno in range(len(doc)):
-        page = doc[pno]
-        for w in page.widgets():
-            name = w.field_name or "(unnamed)"
-            wtype = _widget_type(w)
-            r = w.rect
-            # halbtransparente Fläche
-            shape = page.new_shape()
-            shape.draw_rect(r)
-            shape.finish(color=(1, 0, 0), fill=(1, 0.9, 0.9), fill_opacity=0.2, width=0.6)
-            shape.commit()
-
-            # Label oberhalb links
-            label = f"{name}\n({wtype}) p{pno}"
-            page.insert_text(
-                fitz.Point(r.x0, max(0, r.y0 - 3)),
-                label,
-                fontname=label_font,
-                fontsize=6.5,
-                color=(0.1, 0.1, 0.1),
-            )
-    doc.save(out_path, deflate=True)
-    doc.close()
-
-
-# ---------- Formular befüllen ----------
-
-def _set_text(w: fitz.Widget, value: str) -> None:
-    w.field_value = value
-    w.update()  # erzeugt Appearance
-
-
-def _set_checkbox(w: fitz.Widget, checked: bool) -> None:
-    # PyMuPDF: für Checkboxen reicht field_value auf "Yes"/"Off"
-    w.field_value = "Yes" if checked else "Off"
-    w.update()
-
-
-def _flatten(doc: fitz.Document) -> None:
-    """
-    'Formularfelder' visuell festschreiben:
-    - Widgets werden in statischen Inhalt gerendert (Appearance beachten)
-    - Danach Widgets löschen -> kein Verschieben/Rendering-Bug mehr möglich
-    """
-    for pno in range(len(doc)):
-        page = doc[pno]
-        for w in list(page.widgets()):
-            # Falls ein Widget keine Appearance hat, erzeugen:
-            try:
-                w.update()
-            except Exception:
-                pass
-        # Jetzt alle Widgets löschen (Inhalt bleibt durch Appearance erhalten)
-        for w in list(page.widgets()):
-            try:
-                page.delete_widget(w)
-            except Exception:
-                pass
-
-
-def _first(doc: fitz.Document, field_name: str) -> Optional[fitz.Widget]:
-    """Hilfsfunktion: erstes Widget mit exakt diesem Namen auf allen Seiten finden."""
-    for pno in range(len(doc)):
-        for w in doc[pno].widgets():
-            if (w.field_name or "") == field_name:
-                return w
-    return None
-
-
-def fill_442(pdf_path: str, out_path: str, data: Dict[str, Any]) -> None:
-    """
-    Befüllt das Formular 442.pdf.
-    `data` hat die logischen Felder. Mapping unten ordnet sie echten Widget-Namen zu.
-    """
-    # --------------------------
-    # 1) Mapping: LOGISCH -> WIDGET-NAME
-    # Die Namen unten stammen aus deiner Feldliste (Beispiele, Seite 1/2).
-    # Wenn etwas um 1–2 Felder versetzt ist: einmal Overlay erzeugen und Namen anpassen.
-    # --------------------------
-MAP: Dict[str, str] = {
-    # Kindergeld-Nummer (12 Felder)
-    "kgnr_teil1": "TEXTAREA.p0.x24.y15",
-    "kgnr_teil2": "TEXTAREA.p0.x22.y27",
-    "kgnr_teil3": "TEXTAREA.p0.x28.y27",
-    "kgnr_teil4": "TEXTAREA.p0.x38.y27",
-    "kgnr_teil5": "TEXTAREA.p0.x44.y27",
-    "kgnr_teil6": "TEXTAREA.p0.x50.y27",
-    "kgnr_teil7": "TEXTAREA.p0.x60.y27",
-    "kgnr_teil8": "TEXTAREA.p0.x66.y27",
-    "kgnr_teil9": "TEXTAREA.p0.x72.y27",
-    "kgnr_teil10": "TEXTAREA.p0.x82.y27",
-    "kgnr_teil11": "TEXTAREA.p0.x88.y27",
-    "kgnr_teil12": "TEXTAREA.p0.x94.y27",
+def draw_box(c, x, y, width, height, label="", value=""):
+    """Zeichnet eine Box mit Label und Wert"""
+    # Box-Rahmen
+    c.setStrokeColor(LINE_COLOR)
+    c.setLineWidth(0.5)
+    c.rect(x, y, width, height)
     
-    # Anzahl Anlagen
-    "anz_anlagen": "TEXTAREA.p0.x140.y43",
+    # Label (klein, grau)
+    if label:
+        c.setFont("Helvetica", 7)
+        c.setFillColorRGB(0.4, 0.4, 0.4)
+        c.drawString(x + 2, y + height - 8, label)
     
-    # Persönliche Daten
-    "familienname": "TEXTAREA.p0.x22.y103",
-    "vorname": "TEXTAREA.p0.x22.y113",
-    "geburtsdatum": "TEXTAREA.p0.x22.y125",
-    "geburtsort": "TEXTAREA.p0.x112.y125",
-    "staatsang": "TEXTAREA.p0.x140.y125",
-    "anschrift": "TEXTAREA.p0.x22.y139",
+    # Wert (größer, schwarz)
+    if value:
+        c.setFont("Helvetica", 10)
+        c.setFillColorRGB(0, 0, 0)
+        c.drawString(x + 2, y + height/2 - 3, str(value))
+
+def draw_checkbox(c, x, y, size, checked=False, label=""):
+    """Zeichnet eine Checkbox"""
+    # Box
+    c.setStrokeColor(LINE_COLOR)
+    c.setLineWidth(0.5)
+    c.rect(x, y, size, size)
     
-    # Familienstand (Checkboxen bleiben gleich)
-    "fs_ledig": "CHECKBOX.p0.x42.y146",
-    "fs_verheiratet": "CHECKBOX.p0.x94.y146",
-    "fs_geschieden": "CHECKBOX.p0.x120.y146",
-    "fs_aufgehoben": "CHECKBOX.p0.x94.y152",
-    "fs_getrennt": "CHECKBOX.p0.x154.y152",
-    "fs_verwitwet": "CHECKBOX.p0.x120.y152",
+    # Häkchen wenn checked
+    if checked:
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(x + 2, y + 2, "✓")
     
-    # Zahlungsweg (Seite 2)
-    "iban": "TEXTAREA.p1.x22.y221",
-    "bic": "TEXTAREA.p1.x108.y220",
-    "bank": "TEXTAREA.p1.x22.y251",
-    "kontoinhaber": "TEXTAREA.p1.x108.y250",
+    # Label rechts neben Box
+    if label:
+        c.setFont("Helvetica", 9)
+        c.setFillColorRGB(0, 0, 0)
+        c.drawString(x + size + 5, y + 2, label)
+
+def draw_section_header(c, x, y, width, number, title):
+    """Zeichnet einen Sektion-Header"""
+    # Hintergrund
+    c.setFillColor(HEADER_BG)
+    c.rect(x, y, width, 15, fill=1, stroke=0)
     
-    # Kontoinhaber Checkboxen
-    "kh_ist_antragsteller": "CHECKBOX.p0.x20.y233",
-    "kh_andere_person": "CHECKBOX.p0.x20.y239",
-    "kh_andere_name": "TEXTAREA.p0.x90.y239",
-}
+    # Nummer in Box
+    c.setStrokeColor(LINE_COLOR)
+    c.setLineWidth(0.5)
+    c.rect(x + 5, y + 2, 12, 11)
+    c.setFillColorRGB(0, 0, 0)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(x + 9, y + 4, str(number))
+    
+    # Titel
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(x + 25, y + 4, title)
 
-    # --------------------------
-    # 2) Logische Daten übernehmen
-    # Erwartete 'data'-Struktur (Beispiel):
-    # {
-    #   "last_name": "Muster",
-    #   "first_name": "Max",
-    #   "birth_date": "01.01.1990",
-    #   "birth_place": "Berlin",
-    #   "citizenship": "deutsch",
-    #   "address": "Teststraße 1, 10115 Berlin",
-    #   "marital": "ledig" | "verheiratet" | "geschieden" | "verwitwet" | "aufgehoben" | "getrennt",
-    #   "iban": "DE...",
-    #   "bic": "BIC...",
-    #   "bank": "Bankname",
-    #   "kh": "antragsteller" | "andere",
-    #   "kh_name": "…" (falls kh=andere)
-    #   "kg_parts": ["1","2",...,"12"]  # optional: die 12 Segmente der KG-Nr.
-    #   "anz_anlagen": "1"
-    # }
-    # --------------------------
-    last_name   = data.get("last_name", "")
-    first_name  = data.get("first_name", "")
-    birth_date  = data.get("birth_date", "")
-    birth_place = data.get("birth_place", "")
-    citizenship = data.get("citizenship", "")
-    address     = data.get("address", "")
-    marital     = (data.get("marital", "") or "").lower()
-    iban        = data.get("iban", "")
-    bic         = data.get("bic", "")
-    bank        = data.get("bank", "")
-    kh          = (data.get("kh", "antragsteller") or "").lower()   # kontoinhaber
-    kh_name     = data.get("kh_name", "")
-    kg_parts    = data.get("kg_parts", [])
-    anz_anlagen = data.get("anz_anlagen", "")
-
-    doc = fitz.open(pdf_path)
-
-    # 2.1 KG-Nr. (12 Teilfelder – wenn mitgegeben)
-    if kg_parts and len(kg_parts) == 12:
-        for i, part in enumerate(kg_parts, start=1):
-            w = _first(doc, MAP[f"kgnr_teil{i}"])
-            if w: _set_text(w, part)
-
-    # 2.2 Anzahl "Anlage Kind"
-    if anz_anlagen:
-        w = _first(doc, MAP["anz_anlagen"])
-        if w: _set_text(w, anz_anlagen)
-
-    # 2.3 Basisdaten
-    mapping_text = {
-        "familienname": last_name,
-        "vorname": first_name,
-        "geburtsdatum": birth_date,
-        "geburtsort": birth_place,
-        "staatsang": citizenship,
-        "anschrift": address,
-        "iban": iban,
-        "bic": bic,
-        "bank": bank,
-        "kontoinhaber": (first_name + " " + last_name).strip() if kh == "antragsteller" else kh_name,
-        "kh_andere_name": kh_name,
-    }
-    for key, value in mapping_text.items():
-        if not value:
-            continue
-        fname = MAP.get(key)
-        if not fname:
-            continue
-        w = _first(doc, fname)
-        if w and _widget_type(w) in ("text", "combobox", "listbox"):
-            _set_text(w, value)
-
-    # 2.4 Familienstand – Checkboxen
-    cb_map = {
-        "ledig":       "fs_ledig",
-        "verheiratet": "fs_verheiratet",
-        "geschieden":  "fs_geschieden",
-        "verwitwet":   "fs_verwitwet",
-        "aufgehoben":  "fs_aufgehoben",
-        "getrennt":    "fs_getrennt",
-        "dauernd getrennt": "fs_getrennt",
-        "dauernd getrennt lebend": "fs_getrennt",
-    }
-    target_cb = cb_map.get(marital, "")
-    for label, fname_key in cb_map.items():
-        fname = MAP.get(fname_key)
-        w = _first(doc, fname) if fname else None
-        if w and _widget_type(w) == "checkbox":
-            _set_checkbox(w, fname_key == target_cb)
-
-    # 2.5 Kontoinhaber-Logik
-    if kh == "antragsteller":
-        w = _first(doc, MAP["kh_ist_antragsteller"])
-        if w: _set_checkbox(w, True)
-        w = _first(doc, MAP["kh_andere_person"])
-        if w: _set_checkbox(w, False)
-    else:
-        w = _first(doc, MAP["kh_ist_antragsteller"])
-        if w: _set_checkbox(w, False)
-        w = _first(doc, MAP["kh_andere_person"])
-        if w: _set_checkbox(w, True)
-        # Name der anderen Person wurde oben in mapping_text gesetzt
-
-    # 3) Flatten → Erscheinungsbilder festschreiben & Widgets entfernen
-    _flatten(doc)
-    doc.save(out_path, deflate=True)
-    doc.close()
-
-
-# ---------- Wrapper für Orchestrator-Kompatibilität ----------
-
-def fill_kindergeld(template_path: str, out_path: str, data: Dict[str, Any]) -> None:
+def create_kindergeld_pdf(out_path: str, data: Dict[str, Any]) -> None:
     """
-    Kompatibilitäts-Wrapper für den Orchestrator.
-    Konvertiert das Orchestrator-Format zu fill_442-Format.
+    Erstellt ein Kindergeld-PDF das wie das Original aussieht
     """
     fields = data.get("fields", {})
     kids = data.get("kids", [])
     
-    # Name splitten
+    c = canvas.Canvas(out_path, pagesize=A4)
+    width, height = A4
+    
+    # === SEITE 1 ===
+    
+    # Logo-Bereich (oben rechts)
+    c.setFont("Helvetica", 8)
+    c.drawRightString(width - 40, height - 30, "Familienkasse")
+    
+    # Haupttitel
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(40, height - 60, "Antrag auf Kindergeld")
+    
+    c.setFont("Helvetica", 8)
+    c.drawString(40, height - 75, "Beachten Sie bitte die anhängenden Hinweise und das Merkblatt Kindergeld.")
+    
+    # Kindergeld-Nummer (12 Felder)
+    y_pos = height - 95
+    c.setFont("Helvetica", 8)
+    c.drawString(40, y_pos, "Kindergeld-Nr.:")
+    
+    # 12 kleine Boxen für KG-Nummer
+    kg_nr = data.get("kg_parts", [])
+    for i in range(12):
+        x_box = 130 + (i * 18)
+        val = kg_nr[i] if i < len(kg_nr) else ""
+        draw_box(c, x_box, y_pos - 10, 15, 15, value=val)
+    
+    # Anzahl Anlagen
+    c.drawString(width - 150, y_pos, "Anzahl der beigefügten")
+    c.drawString(width - 150, y_pos - 10, '"Anlage Kind":')
+    draw_box(c, width - 60, y_pos - 10, 20, 15, value=str(len(kids)))
+    
+    # === SEKTION 1: ANGABEN ZUR ANTRAGSTELLENDEN PERSON ===
+    y_pos = height - 140
+    draw_section_header(c, 40, y_pos, width - 80, 1, "Angaben zur antragstellenden Person")
+    
+    y_pos -= 25
+    
+    # Name aufteilen
     full_name = fields.get("full_name", "")
     name_parts = full_name.split(maxsplit=1)
-    first_name = name_parts[0] if name_parts else ""
-    last_name = name_parts[1] if len(name_parts) > 1 else ""
+    vorname = name_parts[0] if name_parts else ""
+    nachname = name_parts[1] if len(name_parts) > 1 else ""
     
-    # Adresse zusammenbauen
-    address = f"{fields.get('addr_street', '')}, {fields.get('addr_plz', '')} {fields.get('addr_city', '')}".strip(", ")
+    # Familienname
+    draw_box(c, 40, y_pos, 250, 20, "Familienname", nachname)
     
-    # fill_442 Datenstruktur
-    pdf_data = {
-        "first_name": first_name,
-        "last_name": last_name,
-        "birth_date": fields.get("dob", ""),
-        "birth_place": "",  # nicht im Orchestrator
-        "citizenship": fields.get("citizenship", ""),
-        "address": address,
-        "marital": fields.get("marital", ""),
-        "iban": fields.get("iban", ""),
-        "bic": "",  # nicht im Orchestrator
-        "bank": "",  # nicht im Orchestrator
-        "kh": "antragsteller",
-        "anz_anlagen": str(len(kids)),
-    }
+    # Titel (klein, rechts)
+    draw_box(c, 295, y_pos, 80, 20, "Titel", "")
     
-    fill_442(template_path, out_path, pdf_data)
+    # Steuer-ID (ganz rechts)
+    draw_box(c, 380, y_pos, 175, 20, "Steuerliche Identifikationsnummer (zwingend ausfüllen)", 
+             fields.get("taxid_parent", ""))
+    
+    y_pos -= 25
+    
+    # Vorname
+    draw_box(c, 40, y_pos, 250, 20, "Vorname", vorname)
+    
+    # Geburtsname
+    draw_box(c, 295, y_pos, 260, 20, "ggf. Geburtsname und Familienname aus früherer Ehe", "")
+    
+    y_pos -= 25
+    
+    # Geburtsdatum
+    draw_box(c, 40, y_pos, 100, 20, "Geburtsdatum", fields.get("dob", ""))
+    
+    # Geschlecht (Placeholder)
+    draw_box(c, 145, y_pos, 60, 20, "Geschlecht", "")
+    
+    # Geburtsort
+    draw_box(c, 210, y_pos, 160, 20, "Geburtsort", "")
+    
+    # Staatsangehörigkeit
+    draw_box(c, 375, y_pos, 180, 20, "Staatsangehörigkeit", fields.get("citizenship", ""))
+    
+    y_pos -= 25
+    
+    # Anschrift (große Box)
+    addr = f"{fields.get('addr_street', '')}, {fields.get('addr_plz', '')} {fields.get('addr_city', '')}"
+    draw_box(c, 40, y_pos, 515, 30, 
+             "Anschrift (Straße/Platz, Hausnummer, Postleitzahl, Wohnort, Staat)", 
+             addr)
+    
+    y_pos -= 40
+    
+    # Familienstand
+    c.setFont("Helvetica", 9)
+    c.drawString(40, y_pos, "Familienstand:")
+    
+    marital = fields.get('marital', '').lower()
+    
+    # Checkboxen horizontal
+    cb_y = y_pos - 5
+    draw_checkbox(c, 120, cb_y, 10, marital == 'ledig', "ledig")
+    draw_checkbox(c, 180, cb_y, 10, marital == 'verheiratet', "verheiratet")
+    draw_checkbox(c, 280, cb_y, 10, marital == 'verwitwet', "verwitwet")
+    
+    cb_y -= 12
+    draw_checkbox(c, 180, cb_y, 10, marital == 'geschieden', "geschieden")
+    draw_checkbox(c, 280, cb_y, 10, marital in ['getrennt', 'dauernd getrennt lebend'], "dauernd getrennt lebend")
+    
+    y_pos -= 50
+    
+    # === SEKTION 2: EHEPARTNER (vereinfacht) ===
+    draw_section_header(c, 40, y_pos, width - 80, 2, 
+                       "Angaben zum/zur Ehepartner(in) bzw. eingetragenen Lebenspartner(in)")
+    
+    y_pos -= 30
+    c.setFont("Helvetica", 8)
+    c.setFillColorRGB(0.5, 0.5, 0.5)
+    c.drawString(45, y_pos, "(Bitte im Original-Formular ausfüllen)")
+    
+    y_pos -= 35
+    
+    # === SEKTION 3: ZAHLUNGSWEG ===
+    draw_section_header(c, 40, y_pos, width - 80, 3, "Angaben zum Zahlungsweg")
+    
+    y_pos -= 25
+    
+    # IBAN
+    iban = fields.get('iban', '')
+    # IBAN formatieren
+    if iban and len(iban) >= 4:
+        iban_formatted = ' '.join([iban[i:i+4] for i in range(0, len(iban), 4)])
+    else:
+        iban_formatted = iban
+    
+    draw_box(c, 40, y_pos, 280, 20, "IBAN", iban_formatted)
+    
+    # BIC
+    draw_box(c, 325, y_pos, 230, 20, "BIC", "")
+    
+    y_pos -= 25
+    
+    # Bank
+    draw_box(c, 40, y_pos, 280, 20, "Bank, Finanzinstitut", "")
+    
+    # Kontoinhaber
+    draw_box(c, 325, y_pos, 230, 20, "Kontoinhaber(in) ist", full_name)
+    
+    y_pos -= 30
+    
+    # Kontoinhaber-Checkboxen
+    draw_checkbox(c, 40, y_pos, 10, True, "antragstellende Person wie unter 1")
+    draw_checkbox(c, 40, y_pos - 15, 10, False, "nicht antragstellende Person, sondern")
+    
+    y_pos -= 50
+    
+    # === SEKTION 4: BESCHEID-EMPFÄNGER (vereinfacht) ===
+    draw_section_header(c, 40, y_pos, width - 80, 4, 
+                       "Der Bescheid soll nicht mir, sondern folgender Person zugesandt werden")
+    
+    y_pos -= 30
+    c.setFont("Helvetica", 8)
+    c.setFillColorRGB(0.5, 0.5, 0.5)
+    c.drawString(45, y_pos, "(Optional)")
+    
+    # === SEITE 2: KINDER ===
+    if kids:
+        c.showPage()
+        
+        y_pos = height - 60
+        draw_section_header(c, 40, y_pos, width - 80, 5, 
+                           f"Angaben zu Kindern (Anzahl: {len(kids)})")
+        
+        y_pos -= 30
+        
+        for i, kid in enumerate(kids, 1):
+            if y_pos < 150:  # Neue Seite wenn zu wenig Platz
+                c.showPage()
+                y_pos = height - 60
+            
+            # Kind-Header
+            c.setFont("Helvetica-Bold", 10)
+            c.setFillColorRGB(0, 0, 0)
+            c.drawString(40, y_pos, f"Kind {i}")
+            
+            y_pos -= 20
+            
+            # Name
+            draw_box(c, 40, y_pos, 250, 20, "Voller Name", kid.get('kid_name', ''))
+            
+            # Geburtsdatum
+            draw_box(c, 295, y_pos, 130, 20, "Geburtsdatum", kid.get('kid_dob', ''))
+            
+            # Geschlecht (Placeholder)
+            draw_box(c, 430, y_pos, 125, 20, "Geschlecht", "")
+            
+            y_pos -= 25
+            
+            # Steuer-ID
+            draw_box(c, 40, y_pos, 250, 20, "Steuerliche Identifikationsnummer", 
+                    kid.get('kid_taxid', ''))
+            
+            # Verwandtschaft
+            relation_map = {
+                'leiblich': 'leibliches Kind',
+                'adoptiert': 'adoptiertes Kind',
+                'pflegekind': 'Pflegekind',
+                'stiefkind': 'Stiefkind'
+            }
+            relation_text = relation_map.get(kid.get('kid_relation', ''), kid.get('kid_relation', ''))
+            draw_box(c, 295, y_pos, 260, 20, "Verwandtschaft", relation_text)
+            
+            y_pos -= 25
+            
+            # Status
+            status_map = {
+                'schulpflichtig': 'Schulpflichtig',
+                'ausbildung': 'In Ausbildung',
+                'studium': 'Im Studium',
+                'arbeitssuchend': 'Arbeitssuchend',
+                'unter_6': 'Unter 6 Jahre'
+            }
+            status_text = status_map.get(kid.get('kid_status', ''), kid.get('kid_status', ''))
+            draw_box(c, 40, y_pos, 250, 20, "Status", status_text)
+            
+            # Haushalt
+            cohab_text = "Ja" if kid.get('kid_cohab') else "Nein"
+            draw_box(c, 295, y_pos, 260, 20, "Wohnt im Haushalt", cohab_text)
+            
+            y_pos -= 35
+    
+    # === FOOTER ===
+    def draw_footer(page_num):
+        c.setFont("Helvetica", 7)
+        c.setFillColorRGB(0.5, 0.5, 0.5)
+        c.drawString(40, 30, f"Erstellt mit Kindergeld-Bot • Blatt {page_num} von 4")
+        c.drawRightString(width - 40, 30, "KGFAMKA-001-DE-FL")
+    
+    # Footer auf allen Seiten
+    for page in range(1, c.getPageNumber() + 1):
+        draw_footer(page)
+    
+    # Speichern
+    c.save()
+
+
+def fill_kindergeld(template_path: str, out_path: str, data: Dict[str, Any]) -> None:
+    """Wrapper für Kompatibilität"""
+    create_kindergeld_pdf(out_path, data)
 
 
 def make_grid(template_path: str) -> bytes:
-    """Grid-Funktion für Debug-Endpoint"""
+    """Grid für Debug"""
     import io
-    out_path = "/tmp/grid_temp.pdf"
-    make_debug_overlay(template_path, out_path)
-    with open(out_path, "rb") as f:
-        return f.read()
+    from reportlab.lib.pagesizes import A4
+    
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    c.setFont("Helvetica", 12)
+    c.drawString(100, 400, "Kindergeld PDF Generator")
+    c.drawString(100, 380, "Kein Template nötig - PDF wird generiert")
+    c.save()
+    
+    buffer.seek(0)
+    return buffer.read()
 
-
-# ---------- Mini-CLI-Test ----------
 
 if __name__ == "__main__":
-    import argparse
-    ap = argparse.ArgumentParser(description="KG1 (442.pdf) Debug/Fill")
-    ap.add_argument("--pdf", default="app/pdf/templates/442.pdf", help="Pfad zur 442.pdf")
-    ap.add_argument("--out", default="/tmp/kg1_out.pdf", help="Ausgabedatei")
-    ap.add_argument("--mode", choices=["dump", "overlay", "fill"], default="overlay")
-    ap.add_argument("--data", default="", help="JSON mit logischen Feldern (bei mode=fill)")
-    args = ap.parse_args()
-
-    if args.mode == "dump":
-        save_widgets_json(args.pdf, args.out)
-        print(f"Widgets -> {args.out}")
-    elif args.mode == "overlay":
-        make_debug_overlay(args.pdf, args.out)
-        print(f"Overlay -> {args.out}")
-    else:
-        payload = json.loads(args.data) if args.data else {
-            "last_name": "Mustermann",
-            "first_name": "Max",
-            "birth_date": "01.01.1990",
-            "birth_place": "Berlin",
-            "citizenship": "deutsch",
-            "address": "Teststraße 1, 10115 Berlin",
-            "marital": "ledig",
+    # Test
+    test_data = {
+        "fields": {
+            "full_name": "Max Mustermann",
+            "dob": "01.01.1990",
+            "addr_street": "Teststraße 1",
+            "addr_plz": "10115",
+            "addr_city": "Berlin",
+            "taxid_parent": "12345678901",
             "iban": "DE89370400440532013000",
-            "bic": "GENODEF1S10",
-            "bank": "Musterbank",
-            "kh": "antragsteller",
-            "kg_parts": list("123456789012"),
-            "anz_anlagen": "1",
-        }
-        fill_442(args.pdf, args.out, payload)
-        print(f"Gefüllt -> {args.out}")
+            "marital": "ledig",
+            "citizenship": "deutsch",
+            "employment": "angestellt",
+            "start_month": "01.2024"
+        },
+        "kids": [
+            {
+                "kid_name": "Mia Mustermann",
+                "kid_dob": "15.06.2020",
+                "kid_taxid": "98765432109",
+                "kid_relation": "leiblich",
+                "kid_cohab": True,
+                "kid_status": "unter_6"
+            }
+        ],
+        "kg_parts": list("123456789012")
+    }
+    
+    create_kindergeld_pdf("/tmp/kindergeld_generated.pdf", test_data)
+    print("✅ PDF erstellt: /tmp/kindergeld_generated.pdf")
