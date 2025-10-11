@@ -154,13 +154,26 @@ def create_kindergeld_pdf(out_path: str, data: Dict[str, Any]) -> None:
     
     y_pos -= 25
     
-    # Anschrift (große Box)
+    # Anschrift (große Box) - y_pos VORHER nach unten
+    y_pos -= 15  # Box startet tiefer
     addr = f"{fields.get('addr_street', '')}, {fields.get('addr_plz', '')} {fields.get('addr_city', '')}"
-    draw_box(c, 40, y_pos, 515, 40, 
-             "Anschrift (Straße/Platz, Hausnummer, Postleitzahl, Wohnort, Staat)", 
-             addr, font_size=8)
     
-    y_pos -= 50
+    # Box zeichnen (jetzt größer und tiefer)
+    c.setStrokeColor(LINE_COLOR)
+    c.setLineWidth(0.5)
+    c.rect(40, y_pos, 515, 45)  # Höhe 45 statt 30
+    
+    # Label (klein oben)
+    c.setFont("Helvetica", 7)
+    c.setFillColorRGB(0.4, 0.4, 0.4)
+    c.drawString(42, y_pos + 38, "Anschrift (Straße/Platz, Hausnummer, Postleitzahl, Wohnort, Staat)")
+    
+    # Wert (klein in der Mitte)
+    c.setFont("Helvetica", 8)
+    c.setFillColorRGB(0, 0, 0)
+    c.drawString(42, y_pos + 18, addr)
+    
+    y_pos -= 55
     
     # Familienstand
     c.setFont("Helvetica", 9)
