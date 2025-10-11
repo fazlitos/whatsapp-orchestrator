@@ -153,58 +153,51 @@ def fill_442(pdf_path: str, out_path: str, data: Dict[str, Any]) -> None:
     # Die Namen unten stammen aus deiner Feldliste (Beispiele, Seite 1/2).
     # Wenn etwas um 1–2 Felder versetzt ist: einmal Overlay erzeugen und Namen anpassen.
     # --------------------------
-    MAP: Dict[str, str] = {
-        # Seite 1 – Kopf / Person
-        "kgnr_teil1": "TEXTFIELD.p0.x24.y15",     # Kindergeld-Nr. (links)
-        "kgnr_teil2": "TEXTFIELD.p0.x22.y27",
-        "kgnr_teil3": "TEXTFIELD.p0.x28.y27",
-        "kgnr_teil4": "TEXTFIELD.p0.x38.y27",
-        "kgnr_teil5": "TEXTFIELD.p0.x44.y27",
-        "kgnr_teil6": "TEXTFIELD.p0.x50.y27",
-        "kgnr_teil7": "TEXTFIELD.p0.x60.y27",
-        "kgnr_teil8": "TEXTFIELD.p0.x66.y27",
-        "kgnr_teil9": "TEXTFIELD.p0.x72.y27",
-        "kgnr_teil10": "TEXTFIELD.p0.x82.y27",
-        "kgnr_teil11": "TEXTFIELD.p0.x88.y27",
-        "kgnr_teil12": "TEXTFIELD.p0.x94.y27",
-
-        # Anzahl Anlagen Kind:
-        "anz_anlagen": "TEXTFIELD.p0.x140.y43",
-
-        # Antragsteller*in (Familienname / Vorname – erfahrungsgemäß zwei Zeilen darunter)
-        "familienname": "TEXTFIELD.p0.x22.y103",
-        "vorname":     "TEXTFIELD.p0.x22.y113",
-
-        # Geburtsdatum / Geburtsort:
-        "geburtsdatum": "TEXTFIELD.p0.x22.y125",
-        "geburtsort":   "TEXTFIELD.p0.x112.y125",
-
-        # Staatsangehörigkeit (rechts neben Geschlecht):
-        "staatsang": "TEXTFIELD.p0.x140.y125",
-
-        # Anschrift (Fließtextblock):
-        "anschrift": "TEXTFIELD.p0.x22.y139",
-
-        # Familienstand (Checkboxen-Blöcke, können leicht variieren)
-        "fs_ledig":        "CHECKBOX.p0.x42.y146",
-        "fs_verheiratet":  "CHECKBOX.p0.x94.y146",
-        "fs_geschieden":   "CHECKBOX.p0.x120.y146",
-        "fs_aufgehoben":   "CHECKBOX.p0.x94.y152",
-        "fs_getrennt":     "CHECKBOX.p0.x154.y152",
-        "fs_verwitwet":    "CHECKBOX.p0.x120.y152",
-
-        # Zahlungsweg (Seite 2, IBAN + Bank)
-        "iban": "TEXTFIELD.p1.x22.y221",
-        "bic":  "TEXTFIELD.p1.x108.y220",
-        "bank": "TEXTFIELD.p1.x22.y251",
-        "kontoinhaber": "TEXTFIELD.p1.x108.y250",
-
-        # Kontoinhaber ist antragstellende Person (Checkbox links Seite 2)
-        "kh_ist_antragsteller": "CHECKBOX.p0.x20.y233",
-        # …und "nicht antragstellende Person, sondern …":
-        "kh_andere_person":     "CHECKBOX.p0.x20.y239",
-        "kh_andere_name":       "TEXTFIELD.p0.x90.y239",
-    }
+MAP: Dict[str, str] = {
+    # Kindergeld-Nummer (12 Felder)
+    "kgnr_teil1": "TEXTAREA.p0.x24.y15",
+    "kgnr_teil2": "TEXTAREA.p0.x22.y27",
+    "kgnr_teil3": "TEXTAREA.p0.x28.y27",
+    "kgnr_teil4": "TEXTAREA.p0.x38.y27",
+    "kgnr_teil5": "TEXTAREA.p0.x44.y27",
+    "kgnr_teil6": "TEXTAREA.p0.x50.y27",
+    "kgnr_teil7": "TEXTAREA.p0.x60.y27",
+    "kgnr_teil8": "TEXTAREA.p0.x66.y27",
+    "kgnr_teil9": "TEXTAREA.p0.x72.y27",
+    "kgnr_teil10": "TEXTAREA.p0.x82.y27",
+    "kgnr_teil11": "TEXTAREA.p0.x88.y27",
+    "kgnr_teil12": "TEXTAREA.p0.x94.y27",
+    
+    # Anzahl Anlagen
+    "anz_anlagen": "TEXTAREA.p0.x140.y43",
+    
+    # Persönliche Daten
+    "familienname": "TEXTAREA.p0.x22.y103",
+    "vorname": "TEXTAREA.p0.x22.y113",
+    "geburtsdatum": "TEXTAREA.p0.x22.y125",
+    "geburtsort": "TEXTAREA.p0.x112.y125",
+    "staatsang": "TEXTAREA.p0.x140.y125",
+    "anschrift": "TEXTAREA.p0.x22.y139",
+    
+    # Familienstand (Checkboxen bleiben gleich)
+    "fs_ledig": "CHECKBOX.p0.x42.y146",
+    "fs_verheiratet": "CHECKBOX.p0.x94.y146",
+    "fs_geschieden": "CHECKBOX.p0.x120.y146",
+    "fs_aufgehoben": "CHECKBOX.p0.x94.y152",
+    "fs_getrennt": "CHECKBOX.p0.x154.y152",
+    "fs_verwitwet": "CHECKBOX.p0.x120.y152",
+    
+    # Zahlungsweg (Seite 2)
+    "iban": "TEXTAREA.p1.x22.y221",
+    "bic": "TEXTAREA.p1.x108.y220",
+    "bank": "TEXTAREA.p1.x22.y251",
+    "kontoinhaber": "TEXTAREA.p1.x108.y250",
+    
+    # Kontoinhaber Checkboxen
+    "kh_ist_antragsteller": "CHECKBOX.p0.x20.y233",
+    "kh_andere_person": "CHECKBOX.p0.x20.y239",
+    "kh_andere_name": "TEXTAREA.p0.x90.y239",
+}
 
     # --------------------------
     # 2) Logische Daten übernehmen
