@@ -9,54 +9,43 @@ from pathlib import Path
 from app.validators import normalize_value, is_complete
 from app.state_manager import state_manager
 
-# Optional: LLM-Extraktor (wenn kein Key vorhanden, fällt Code unten automatisch zurück)
+# Optional: LLM-Extraktor
 try:
     from app.agents import extract_updates_from_text
     LLM_AVAILABLE = True
 except Exception:
     LLM_AVAILABLE = False
 
-# ---------- Artefakte (lokal) ----------
 ART_DIR = Path("/tmp/artifacts")
 ART_DIR.mkdir(exist_ok=True)
-
 BASE = Path(__file__).resolve().parent
-
 
 def _load_json(p: Path):
     return json.loads(p.read_text(encoding="utf-8"))
 
-
-# ---------- Mehrsprachige Prompts ----------
+# Mehrsprachige Prompts
 LOCALES = {
     "de": _load_json(BASE / "locales" / "de.json"),
     "en": _load_json(BASE / "locales" / "en.json"),
     "sq": _load_json(BASE / "locales" / "sq.json"),
 }
 
-
 def t(lang: str, key: str, **kw):
     return LOCALES.get(lang, LOCALES["de"]).get(key, key).format(**kw)
 
-
-# ---------- Formulare ----------
+# Formulare
 def load_form(name: str):
     return _load_json(BASE / "forms" / f"{name}.json")
 
-
 FORMS = {
     "kindergeld": load_form("kindergeld"),
-    # weitere Formulare später hier registrieren
 }
 
-
 def ensure_state(user: str):
-    """Lädt State aus Redis oder erstellt neuen."""
     existing = state_manager.get(user)
     if existing:
         return existing
     
-    # Neuer State
     new_state = {
         "form": "kindergeld",
         "fields": {},
@@ -68,8 +57,7 @@ def ensure_state(user: str):
     state_manager.set(user, new_state)
     return new_state
 
-
-# ---------- Synonyme für Regex-Fallback ----------
+# Synonyme für Regex-Fallback
 TOP_SYNONYMS = {
     "full_name": [r"voller\s+name", r"^name$", r"vor-?\s*und\s*nachname"],
     "dob": [r"geburtsdatum", r"geburtstag", r"dob"],
@@ -83,6 +71,9 @@ TOP_SYNONYMS = {
     "employment": [r"(?:besch(?:ä|a)ftigung|job|occupation|beruf)"],
     "start_month": [r"(?:beginn|start(?:monat)?|ab\s+monat|monat)"],
     "kid_count": [r"(?:kinderanzahl|anzahl\s+kinder|^kinder$)"],
+    "partner_name": [r"(?:partner|ehepartner|ehegatte|spouse)"],
+    "partner_dob": [r"(?:partner.*geburtsdatum|geburtsdatum.*partner)"],
+    "partner_citizenship": [r"(?:partner.*staatsangeh|staatsangeh.*partner)"],
 }
 
 KID_SYNONYMS = {
@@ -95,10 +86,7 @@ KID_SYNONYMS = {
     "kid_eu_benefit": [r"(?:eu-?leistung|eu\s*benefit|leistungen\s*im\s*ausland)"],
 }
 
-
-# ---------- Freitext → Updates (Regex-Fallback, robust) ----------
 def parse_kv_updates(text: str, form_types: dict, current_kid_index: int | None = None):
-    """Sucht in freiem Text nach 'Feld: Wert' Mustern. Ruft group() nur bei Match auf."""
     updates = {}
     s = text or ""
 
@@ -158,7 +146,6 @@ def parse_kv_updates(text: str, form_types: dict, current_kid_index: int | None 
 
     return updates
 
-
 def _summary(st):
     f = st["fields"]
     kids = st.get("kids", [])
@@ -169,24 +156,26 @@ def _summary(st):
         f"Steuer-ID: {f.get('taxid_parent','-')}",
         f"IBAN: {f.get('iban','-')}",
         f"Familienstand: {f.get('marital','-')}",
+    ]
+    # Partner-Info wenn verheiratet
+    if f.get('marital') in ['verheiratet', 'lebenspartnerschaft']:
+        lines.append(f"Partner: {f.get('partner_name','-')}")
+    lines.extend([
         f"Staatsangehörigkeit: {f.get('citizenship','-')}",
         f"Beschäftigung: {f.get('employment','-')}",
         f"Beginn (MM.JJJJ): {f.get('start_month','-')}",
         f"Kinder: {f.get('kid_count','-')}",
-    ]
+    ])
     for i, k in enumerate(kids, 1):
         lines.append(
             f"  #{i} {k.get('kid_name','-')} | {k.get('kid_dob','-')} | Steuer-ID: {k.get('kid_taxid','-')}"
         )
     return "\n".join(lines)
 
-
-# ---------- Hauptlogik ----------
 def handle_message(user: str, text: str, lang: str = "de") -> str:
     st = ensure_state(user)
     st["lang"] = lang
     
-    # Helper: State speichern und zurückgeben
     def save_and_return(msg):
         state_manager.set(user, st)
         return msg
@@ -213,12 +202,11 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
     if low in {"status", "zusammenfassung", "summary"}:
         return save_and_return(_summary(st))
 
-    # --- LLM-Extraktion (mit Fallback auf Regex) ---
+    # LLM-Extraktion
     current_kid_index = None
     if "kid_count" in st["fields"] and len(st["kids"]) < st["fields"]["kid_count"]:
         current_kid_index = len(st["kids"])
 
-    # gezielter: welche Felder fehlen aktuell?
     _, missing_now = is_complete(st["form"], st["fields"], st.get("kids", []))
 
     top_updates = {}
@@ -237,16 +225,14 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
         except Exception as e:
             print("LLM extract error (using regex fallback):", e)
 
-    # Fallback/Ergänzung via Regex
     regex_updates = parse_kv_updates(text, types, current_kid_index)
     for k, v in regex_updates.items():
-        # nur füllen, wenn LLM nichts geliefert hat
         if k.startswith("kid_"):
-            pass  # unten im Kids-Block
+            pass
         else:
             top_updates.setdefault(k, v)
 
-    # Top-Level Updates mergen (weiterhin validiert)
+    # Top-Level Updates mergen
     for k, v in (top_updates or {}).items():
         norm = normalize_value(types.get(k, "string"), v)
         if norm is not None:
@@ -254,13 +240,12 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
             if k in order:
                 st["idx"] = max(st["idx"], order.index(k) + 1)
 
-    # Kids-Updates mergen (nur für aktuelles Kind sinnvoll)
+    # Kids-Updates mergen
     if current_kid_index is not None:
         if not st["kids"] or len(st["kids"]) <= current_kid_index:
             st["kids"].append({})
         kid = st["kids"][-1]
 
-        # aus LLM
         for ku in (kids_updates or []):
             for k, v in ku.items():
                 norm = normalize_value(
@@ -278,7 +263,6 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
                 if norm is not None:
                     kid[k] = norm
 
-        # aus Regex
         for k, v in regex_updates.items():
             if not k.startswith("kid_"):
                 continue
@@ -297,7 +281,7 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
             if norm is not None:
                 kid[k] = norm
 
-    # Erstes Feld (Name) direkt konsumieren, falls noch leer
+    # Erstes Feld direkt konsumieren
     if st["idx"] == 0 and "full_name" not in st["fields"]:
         name = (text or "").strip()
         bad = {"hallo", "hi", "hey", "hello", "servus", "moin"}
@@ -307,9 +291,17 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
         else:
             return save_and_return(t(lang, "ask_full_name"))
 
-    # Top-Level Felder in Reihenfolge abfragen
+    # Top-Level Felder durchgehen
     while st["idx"] < len(order):
         field = order[st["idx"]]
+        
+        # Partner-Felder überspringen wenn nicht verheiratet
+        if field in ["partner_name", "partner_dob", "partner_citizenship"]:
+            marital = st["fields"].get("marital", "").lower()
+            if marital not in ["verheiratet", "lebenspartnerschaft"]:
+                st["idx"] += 1
+                continue
+        
         if field not in st["fields"]:
             ftype = types.get(field, "string")
             val = normalize_value(ftype, text or "")
@@ -318,11 +310,23 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
             st["fields"][field] = val
             st["idx"] += 1
             if st["idx"] < len(order):
-                return save_and_return(t(lang, "ask_" + order[st["idx"]]))
+                # Nächstes Feld - aber Partner-Felder wieder überspringen wenn nötig
+                next_field = order[st["idx"]]
+                while next_field in ["partner_name", "partner_dob", "partner_citizenship"]:
+                    marital = st["fields"].get("marital", "").lower()
+                    if marital not in ["verheiratet", "lebenspartnerschaft"]:
+                        st["idx"] += 1
+                        if st["idx"] >= len(order):
+                            break
+                        next_field = order[st["idx"]]
+                    else:
+                        break
+                if st["idx"] < len(order):
+                    return save_and_return(t(lang, "ask_" + order[st["idx"]]))
         else:
             st["idx"] += 1
 
-    # Kinder-Abschnitt (Kindergeld)
+    # Kinder-Abschnitt
     if st["form"] == "kindergeld":
         if "kid_count" not in st["fields"]:
             v = normalize_value("int", text or "")
@@ -343,10 +347,9 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
         kid_types = ["string", "date", "taxid", "enum_relation", "bool", "enum_kstatus", "bool"]
 
         while len(st["kids"]) < st["fields"]["kid_count"]:
-            # Neues Kind beginnen, wenn noch kein offenes Kind existiert
             if not st["kids"] or all(k in st["kids"][-1] for k in kid_fields):
                 st["kids"].append({})
-            i = len(st["kids"])  # 1-basiert
+            i = len(st["kids"])
             kid = st["kids"][-1]
 
             for kf, kt in zip(kid_fields, kid_types):
@@ -355,14 +358,13 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
                     if val is None:
                         return save_and_return(t(lang, "ask_" + kf, i=i))
                     kid[kf] = val
-                    # nächstes fehlendes Feld oder nächstes Kind
                     for nf in kid_fields:
                         if nf not in kid:
                             return save_and_return(t(lang, "ask_" + nf, i=i))
                     if len(st["kids"]) < st["fields"]["kid_count"]:
                         return save_and_return(t(lang, "ask_kid_name", i=len(st["kids"]) + 1))
 
-    # --------- Abschluss: prüfen, lokal "PDF" bauen, senden + Link ----------
+    # Abschluss: PDF erzeugen
     ready, missing = is_complete(st["form"], st["fields"], st.get("kids", []))
     if not ready:
         return save_and_return(t(lang, "ask_" + missing[0]))
@@ -371,9 +373,6 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
     if not base.startswith("http"):
         base = "https://" + base
 
-    payload = {"form": st["form"], "data": {"fields": st["fields"], "kids": st.get("kids", [])}}
-
- # 1) PDF erzeugen und zu R2 hochladen
     try:
         from app.storage import upload_pdf_with_fallback
         from app.pdf.filler import fill_kindergeld
@@ -382,19 +381,14 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
         fid = f"{st['form']}-{uuid.uuid4().hex}.pdf"
         temp_path = ART_DIR / fid
         
-        # Template-Pfad
         template = "app/pdf/templates/kg1.pdf"
         
-        # PDF mit echten Daten füllen
         fill_kindergeld(template, str(temp_path), {"fields": st["fields"], "kids": st.get("kids", [])})
         
-        # PDF lesen und hochladen
         pdf_content = temp_path.read_bytes()
         success, url = upload_pdf_with_fallback(pdf_content, fid)
         
-        # Temp-Datei löschen
         temp_path.unlink(missing_ok=True)
-
         
         if not success:
             return save_and_return("Ich konnte die Datei gerade nicht hochladen. Versuch es bitte nochmal.")
@@ -403,14 +397,14 @@ def handle_message(user: str, text: str, lang: str = "de") -> str:
         print("PDF build error:", e)
         return save_and_return("Ich konnte die Datei gerade nicht erzeugen. Versuch es bitte nochmal oder gib mir kurz Bescheid.")
 
-    # 2) Warmup (optional)
+    # Warmup
     try:
         with httpx.Client(timeout=15) as c:
             _ = c.get(url, headers={"Connection": "keep-alive"})
     except Exception as w:
         print("Warmup warning:", w)
 
-    # 3) Dokument senden; wenn das klemmt, schicken wir den Link im Text
+    # Dokument senden
     from app.providers import send_twilio_document
 
     doc_sent = False
