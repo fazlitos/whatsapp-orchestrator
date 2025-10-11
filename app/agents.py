@@ -23,10 +23,13 @@ KG_FIELD_SPEC = {
         "addr_city": "string",
         "taxid_parent": "taxid",
         "iban": "iban",
-        "marital": "enum:ledig,verheiratet,geschieden,verwitwet,lebenspartnerschaft",
+        "marital": "enum:ledig,verheiratet,geschieden,verwitwet,lebenspartnerschaft,getrennt",
         "citizenship": "string",
         "employment": "string",
         "start_month": "month",       # MM.JJJJ
+        "partner_name": "string",
+        "partner_dob": "date",
+        "partner_citizenship": "string",
         "kid_count": "int"
     },
     "kid": {
@@ -45,7 +48,7 @@ Deine Aufgabe: Lies eine frei formulierte WhatsApp-Nachricht und extrahiere **nu
 die zum Formular 'Kindergeld' gehören. Antworte **ausschließlich** als kompaktes JSON-Objekt.
 
 Konventionen:
-- Keys sind die internen Feldnamen (z.B. "full_name", "addr_plz", "kid_name", "kid_dob").
+- Keys sind die internen Feldnamen (z.B. "full_name", "addr_plz", "partner_name", "kid_name").
 - Datenformate:
   - date: TT.MM.JJJJ (führe ggf. Umwandlung durch)
   - month: MM.JJJJ
@@ -53,11 +56,12 @@ Konventionen:
   - iban: DE… ohne Leerzeichen
   - bool: true/false
   - enum: exakt einer der erlaubten Werte
+- Partner-Felder nur bei verheiratet/lebenspartnerschaft
 - Kinder-Werte gehören in ein Array `kids_updates`, jedes Element nur die in der Nachricht erkannten Felder.
 - Nur Felder zurückgeben, die du **sicher** erkannt hast. Keine Halluzinationen, nichts erfinden.
 - Beispiel-Antwort:
   {
-    "top_updates": {"full_name":"Max Mustermann","addr_plz":"10115"},
+    "top_updates": {"full_name":"Max Mustermann","marital":"verheiratet","partner_name":"Anna Mustermann"},
     "kids_updates":[{"kid_name":"Mia Mustermann","kid_dob":"01.01.2019"}]
   }
 """
