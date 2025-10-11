@@ -13,7 +13,7 @@ FORM_GRAY = HexColor('#F0F0F0')
 LINE_COLOR = HexColor('#333333')
 HEADER_BG = HexColor('#E8E8E8')
 
-def draw_box(c, x, y, width, height, label="", value=""):
+def draw_box(c, x, y, width, height, label="", value="", font_size=10):
     """Zeichnet eine Box mit Label und Wert"""
     # Box-Rahmen
     c.setStrokeColor(LINE_COLOR)
@@ -28,7 +28,7 @@ def draw_box(c, x, y, width, height, label="", value=""):
     
     # Wert (größer, schwarz)
     if value:
-        c.setFont("Helvetica", 10)
+        c.setFont("Helvetica", font_size)
         c.setFillColorRGB(0, 0, 0)
         c.drawString(x + 2, y + height/2 - 3, str(value))
 
@@ -156,11 +156,11 @@ def create_kindergeld_pdf(out_path: str, data: Dict[str, Any]) -> None:
     
     # Anschrift (große Box)
     addr = f"{fields.get('addr_street', '')}, {fields.get('addr_plz', '')} {fields.get('addr_city', '')}"
-    draw_box(c, 40, y_pos, 515, 30, 
+    draw_box(c, 40, y_pos, 515, 40, 
              "Anschrift (Straße/Platz, Hausnummer, Postleitzahl, Wohnort, Staat)", 
-             addr)
+             addr, font_size=8)
     
-    y_pos -= 40
+    y_pos -= 50
     
     # Familienstand
     c.setFont("Helvetica", 9)
