@@ -154,8 +154,8 @@ def create_kindergeld_pdf(out_path: str, data: Dict[str, Any]) -> None:
     
     y_pos -= 25
     
-    # Anschrift (große Box) - y_pos VORHER nach unten
-    y_pos -= 15  # Box startet tiefer
+    # Anschrift (große Box) - 2cm nach unten
+    y_pos -= 72  # Box startet 2cm tiefer (15 + 57 Punkte)
     addr = f"{fields.get('addr_street', '')}, {fields.get('addr_plz', '')} {fields.get('addr_city', '')}"
     
     # Box zeichnen (jetzt größer und tiefer)
