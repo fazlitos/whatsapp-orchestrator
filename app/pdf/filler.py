@@ -20,17 +20,17 @@ def draw_box(c, x, y, width, height, label="", value="", font_size=8):
     c.setLineWidth(0.5)
     c.rect(x, y, width, height)
     
-    # Label (klein, grau)
+    # Label (klein, grau) - BLEIBT OBEN
     if label:
         c.setFont("Helvetica", 7)
         c.setFillColorRGB(0.4, 0.4, 0.4)
         c.drawString(x + 2, y + height - 8, label)
     
-    # Wert (größer, schwarz)
+    # Wert (eingetragener Text) - NOCH 2mm tiefer
     if value:
         c.setFont("Helvetica", font_size)
         c.setFillColorRGB(0, 0, 0)
-        c.drawString(x + 2, y + height/2 - 3, str(value))
+        c.drawString(x + 2, y + height/2 - 15, str(value))  # war -9, jetzt -15 (noch 2mm tiefer)
 
 def draw_checkbox(c, x, y, size, checked=False, label=""):
     """Zeichnet eine Checkbox"""
