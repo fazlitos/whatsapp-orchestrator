@@ -30,7 +30,7 @@ def draw_box(c, x, y, width, height, label="", value="", font_size=8):
     if value:
         c.setFont("Helvetica", font_size)
         c.setFillColorRGB(0, 0, 0)
-        c.drawString(x + 2, y + height/2 - 9.5, str(value))  # perfekte Feinabstimmung
+        c.drawString(x + 2, y + height/2 - 9.2, str(value))  # perfekte Position
 
 def draw_checkbox(c, x, y, size, checked=False, label=""):
     """Zeichnet eine Checkbox"""
