@@ -278,6 +278,11 @@ def create_kindergeld_pdf(out_path: str, data: Dict[str, Any]) -> None:
     
     y_pos -= 50
     
+    # Neue Seite wenn zu wenig Platz (unter 100 Punkte = ~3.5cm)
+    if y_pos < 100:
+        c.showPage()
+        y_pos = height - 60
+    
     # === SEKTION 4: BESCHEID-EMPFÄNGER (vereinfacht) ===
     draw_section_header(c, 40, y_pos, width - 80, 4, 
                        "Der Bescheid soll nicht mir, sondern folgender Person zugesandt werden")
