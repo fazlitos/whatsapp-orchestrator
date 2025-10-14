@@ -162,7 +162,7 @@ def create_kindergeld_pdf(out_path: str, data: Dict[str, Any]) -> None:
     c.setFillColorRGB(0, 0, 0)
     c.drawString(42, y_pos + 18, addr)
     
-    y_pos -= 55
+    y_pos -= 24
     
     # Familienstand
     c.setFont("Helvetica", 9)
