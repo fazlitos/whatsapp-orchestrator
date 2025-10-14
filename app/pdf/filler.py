@@ -162,7 +162,7 @@ def create_kindergeld_pdf(out_path: str, data: Dict[str, Any]) -> None:
     c.setFillColorRGB(0, 0, 0)
     c.drawString(42, y_pos + 18, addr)
     
-    y_pos -= 24
+    y_pos -= 55
     
     # Familienstand
     c.setFont("Helvetica", 9)
@@ -282,82 +282,159 @@ def create_kindergeld_pdf(out_path: str, data: Dict[str, Any]) -> None:
     c.setFillColorRGB(0.5, 0.5, 0.5)
     c.drawString(45, y_pos, "(Optional)")
     
-    # === SEITE 2: KINDER ===
-    if kids:
-        c.showPage()
-        
-        y_pos = height - 60
-        draw_section_header(c, 40, y_pos, width - 80, 5, 
-                           f"Angaben zu Kindern (Anzahl: {len(kids)})")
-        
-        y_pos -= 30
-        
-        for i, kid in enumerate(kids, 1):
-            if y_pos < 150:  # Neue Seite wenn zu wenig Platz
-                c.showPage()
-                y_pos = height - 60
-            
-            # Kind-Header
-            c.setFont("Helvetica-Bold", 10)
-            c.setFillColorRGB(0, 0, 0)
-            c.drawString(40, y_pos, f"Kind {i}")
-            
-            y_pos -= 20
-            
-            # Name
-            draw_box(c, 40, y_pos, 250, 20, "Voller Name", kid.get('kid_name', ''))
-            
-            # Geburtsdatum
-            draw_box(c, 295, y_pos, 130, 20, "Geburtsdatum", kid.get('kid_dob', ''))
-            
-            # Geschlecht (Placeholder)
-            draw_box(c, 430, y_pos, 125, 20, "Geschlecht", "")
-            
-            y_pos -= 25
-            
-            # Steuer-ID
-            draw_box(c, 40, y_pos, 250, 20, "Steuerliche Identifikationsnummer", 
-                    kid.get('kid_taxid', ''))
-            
-            # Verwandtschaft
-            relation_map = {
-                'leiblich': 'leibliches Kind',
-                'adoptiert': 'adoptiertes Kind',
-                'pflegekind': 'Pflegekind',
-                'stiefkind': 'Stiefkind'
-            }
-            relation_text = relation_map.get(kid.get('kid_relation', ''), kid.get('kid_relation', ''))
-            draw_box(c, 295, y_pos, 260, 20, "Verwandtschaft", relation_text)
-            
-            y_pos -= 25
-            
-            # Status
-            status_map = {
-                'schulpflichtig': 'Schulpflichtig',
-                'ausbildung': 'In Ausbildung',
-                'studium': 'Im Studium',
-                'arbeitssuchend': 'Arbeitssuchend',
-                'unter_6': 'Unter 6 Jahre'
-            }
-            status_text = status_map.get(kid.get('kid_status', ''), kid.get('kid_status', ''))
-            draw_box(c, 40, y_pos, 250, 20, "Status", status_text)
-            
-            # Haushalt
-            cohab_text = "Ja" if kid.get('kid_cohab') else "Nein"
-            draw_box(c, 295, y_pos, 260, 20, "Wohnt im Haushalt", cohab_text)
-            
-            y_pos -= 35
+    # === SEITE 2: KINDER & UNTERSCHRIFTEN ===
+    c.showPage()
+    y_pos = height - 60
     
-    # === FOOTER ===
-    def draw_footer(page_num):
-        c.setFont("Helvetica", 7)
-        c.setFillColorRGB(0.5, 0.5, 0.5)
-        c.drawString(40, 30, f"Erstellt mit Kindergeld-Bot • Blatt {page_num} von 4")
-        c.drawRightString(width - 40, 30, "KGFAMKA-001-DE-FL")
+    # === SEKTION 5: ANGABEN ZU KINDERN (für die bereits KG bezogen wird) ===
+    draw_section_header(c, 40, y_pos, width - 80, 5, "Angaben zu Kindern")
     
-    # Footer auf allen Seiten
-    for page in range(1, c.getPageNumber() + 1):
-        draw_footer(page)
+    y_pos -= 20
+    c.setFont("Helvetica", 8)
+    c.drawString(40, y_pos, "Für jedes Kind, für das Kindergeld beantragt wird, ist eine gesonderte \"Anlage Kind\" ausgefüllt einzureichen.")
+    
+    y_pos -= 15
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(40, y_pos, "Für folgende Kinder beziehe ich bereits Kindergeld:")
+    
+    y_pos -= 10
+    c.setFont("Helvetica", 7)
+    c.drawString(40, y_pos, "(auch in Fällen der abweichenden Kontoverbindung, Abzweigung und Erstattung):")
+    
+    y_pos -= 25
+    
+    # Tabelle für bereits Kindergeld-Kinder (5 Zeilen)
+    table_headers = [
+        ("Vorname des Kindes,\nggf. abweichender Familienname", 40, 160),
+        ("Geburtsdatum", 200, 70),
+        ("Geschlecht", 275, 55),
+        ("Bei welcher Familienkasse\n(Kindergeldnummer, Personalnummer)?", 335, 220)
+    ]
+    
+    # Header zeichnen
+    c.setFont("Helvetica", 7)
+    c.setStrokeColor(LINE_COLOR)
+    c.setLineWidth(0.5)
+    c.rect(40, y_pos, 515, 15)
+    
+    for header, x, w in table_headers:
+        c.drawString(x + 2, y_pos + 8, header.replace('\n', ' '))
+    
+    y_pos -= 15
+    
+    # 5 Zeilen für Kinder-Einträge
+    for i in range(5):
+        c.rect(40, y_pos, 160, 15)
+        c.rect(200, y_pos, 70, 15)
+        c.rect(275, y_pos, 55, 15)
+        c.rect(335, y_pos, 220, 15)
+        y_pos -= 15
+    
+    y_pos -= 15
+    
+    # === SEKTION 6: ZÄHLKINDER ===
+    draw_section_header(c, 40, y_pos, width - 80, 6, "Folgende Zählkinder sollen berücksichtigt werden:")
+    
+    y_pos -= 25
+    
+    # Tabelle für Zählkinder (5 Zeilen)
+    table_headers2 = [
+        ("Vorname des Kindes,\nggf. abweichender Familienname", 40, 160),
+        ("Geburtsdatum", 200, 70),
+        ("Geschlecht", 275, 55),
+        ("Wer bezieht das Kindergeld\n(Name, Vorname)?", 335, 105),
+        ("Bei welcher Familienkasse\n(Kindergeldnummer, Personalnummer)?", 445, 110)
+    ]
+    
+    # Header zeichnen
+    c.setFont("Helvetica", 7)
+    c.rect(40, y_pos, 515, 15)
+    
+    for header, x, w in table_headers2:
+        c.drawString(x + 2, y_pos + 8, header.replace('\n', ' '))
+    
+    y_pos -= 15
+    
+    # 5 Zeilen für Zählkinder
+    for i in range(5):
+        c.rect(40, y_pos, 160, 15)
+        c.rect(200, y_pos, 70, 15)
+        c.rect(275, y_pos, 55, 15)
+        c.rect(335, y_pos, 105, 15)
+        c.rect(445, y_pos, 110, 15)
+        y_pos -= 15
+    
+    y_pos -= 20
+    
+    # === RECHTLICHE TEXTE ===
+    c.setFont("Helvetica", 7)
+    c.setFillColorRGB(0, 0, 0)
+    
+    text_lines = [
+        "Ich versichere, dass alle Angaben (auch in den Anlagen) vollständig sind und der Wahrheit entsprechen. Mir ist bekannt, dass ich alle",
+        "Änderungen, die für den Anspruch auf Kindergeld von Bedeutung sind, unverzüglich der Familienkasse mitzuteilen habe. Den Inhalt",
+        "des Merkblattes Kindergeld (zu finden unter www.bzst.de oder www.familienkasse.de) habe ich zur Kenntnis genommen."
+    ]
+    
+    for line in text_lines:
+        c.drawString(40, y_pos, line)
+        y_pos -= 10
+    
+    y_pos -= 10
+    
+    c.setFont("Helvetica-Bold", 8)
+    c.drawString(40, y_pos, "Hinweis zum Datenschutz:")
+    y_pos -= 10
+    
+    c.setFont("Helvetica", 7)
+    datenschutz_lines = [
+        "Ihre Daten werden gemäß der §§ 31, 62 bis 78 Einkommensteuergesetz und der Regelungen der Abgabenordnung bzw. aufgrund des",
+        "Bundeskindergeldgesetzes und des Sozialgesetzbuches verarbeitet. Zweck der Verarbeitung der Daten ist die Prüfung Ihres Anspruchs auf",
+        "Kindergeld. Nähere Informationen über die Verarbeitung Ihrer Daten durch die Familienkasse und zu Ihren Rechten nach Artikel 13 bis 22 der",
+        "Datenschutz-Grundverordnung erhalten Sie im Internet auf der Seite Ihrer Familienkasse (zu finden unter",
+        "www.arbeitsagentur.de/datenschutz-familienkasse), auf der auch die Kontaktdaten der/des Datenschutzbeauftragten bereitgestellt sind.",
+        "Kindergeldakten werden in der Regel nach dem Ende der Kindergeldzahlung noch für 6 Jahre aufbewahrt."
+    ]
+    
+    for line in datenschutz_lines:
+        c.drawString(40, y_pos, line)
+        y_pos -= 9
+    
+    y_pos -= 20
+    
+    # === UNTERSCHRIFTEN-BEREICH ===
+    # Datum + Unterschrift Antragsteller
+    c.setStrokeColor(LINE_COLOR)
+    c.setLineWidth(0.5)
+    c.rect(40, y_pos, 80, 20)
+    
+    c.setFont("Helvetica", 7)
+    c.drawString(42, y_pos + 24, "Datum")
+    
+    c.drawString(280, y_pos + 10, "Unterschrift der antragstellenden Person bzw. der gesetzlichen Vertretung")
+    c.line(280, y_pos + 5, 555, y_pos + 5)
+    
+    y_pos -= 35
+    
+    c.setFont("Helvetica", 8)
+    c.drawString(40, y_pos, "Ich bin damit einverstanden, dass das Kindergeld zugunsten der antragstellenden Person festgesetzt bzw. bewilligt wird.")
+    
+    y_pos -= 25
+    
+    # Datum + Unterschrift Partner
+    c.rect(40, y_pos, 80, 20)
+    
+    c.setFont("Helvetica", 7)
+    c.drawString(42, y_pos + 24, "Datum")
+    
+    c.drawString(280, y_pos + 10, "Unterschrift der unter Punkt 2 genannten Person bzw. deren gesetzliche Vertretung")
+    c.line(280, y_pos + 5, 555, y_pos + 5)
+    
+    # Footer
+    c.setFont("Helvetica", 7)
+    c.setFillColorRGB(0.5, 0.5, 0.5)
+    c.drawString(40, 30, "Erstellt mit Kindergeld-Bot • Blatt 2 von 4")
+    c.drawRightString(width - 40, 30, "KGFAMKA-001-DE-FL")
     
     # Speichern
     c.save()
