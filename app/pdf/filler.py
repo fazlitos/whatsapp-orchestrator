@@ -121,58 +121,47 @@ def create_kindergeld_pdf(out_path: str, data: Dict[str, Any]) -> None:
     vorname = name_parts[0] if name_parts else ""
     nachname = name_parts[1] if len(name_parts) > 1 else ""
     
-    # Familienname
+    # ZEILE 1: Familienname + Titel + Steuer-ID
     draw_box(c, 40, y_pos, 250, 20, "Familienname", nachname)
-    
-    # Titel (klein, rechts)
     draw_box(c, 295, y_pos, 80, 20, "Titel", "")
-    
-    # Steuer-ID (ganz rechts)
     draw_box(c, 380, y_pos, 175, 20, "Steuerliche Identifikationsnummer (zwingend ausfüllen)", 
              fields.get("taxid_parent", ""))
     
     y_pos -= 25
     
-    # Vorname
+    # ZEILE 2: Vorname + Geburtsname
     draw_box(c, 40, y_pos, 250, 20, "Vorname", vorname)
-    
-    # Geburtsname
     draw_box(c, 295, y_pos, 260, 20, "ggf. Geburtsname und Familienname aus früherer Ehe", "")
     
     y_pos -= 25
     
-    # Geburtsdatum
+    # ZEILE 3: Geburtsdatum + Geschlecht + Geburtsort + Staatsangehörigkeit
     draw_box(c, 40, y_pos, 100, 20, "Geburtsdatum", fields.get("dob", ""))
-    
-    # Geschlecht (Placeholder)
     draw_box(c, 145, y_pos, 60, 20, "Geschlecht", "")
-    
-    # Geburtsort
     draw_box(c, 210, y_pos, 160, 20, "Geburtsort", "")
-    
-    # Staatsangehörigkeit
     draw_box(c, 375, y_pos, 180, 20, "Staatsangehörigkeit", fields.get("citizenship", ""))
     
-    # Anschrift (große Box)
-    y_pos -= 24  # Box perfekt positioniert
+    y_pos -= 30
+    
+    # ZEILE 4: Anschrift (große Box)
     addr = f"{fields.get('addr_street', '')}, {fields.get('addr_plz', '')} {fields.get('addr_city', '')}"
     
-    # Box zeichnen (jetzt größer und tiefer)
+    # Anschrift-Box manuell zeichnen (nicht via draw_box, damit sie groß genug ist)
     c.setStrokeColor(LINE_COLOR)
     c.setLineWidth(0.5)
-    c.rect(40, y_pos, 515, 45)  # Höhe 45 statt 30
+    c.rect(40, y_pos, 515, 40)
     
-    # Label (klein, tiefer als vorher)
+    # Label oben
     c.setFont("Helvetica", 7)
     c.setFillColorRGB(0.4, 0.4, 0.4)
     c.drawString(42, y_pos + 32, "Anschrift (Straße/Platz, Hausnummer, Postleitzahl, Wohnort, Staat)")
     
-    # Wert (klein in der Mitte)
+    # Text mittig
     c.setFont("Helvetica", 8)
     c.setFillColorRGB(0, 0, 0)
     c.drawString(42, y_pos + 18, addr)
     
-    y_pos -= 55
+    y_pos -= 50
     
     # Familienstand
     c.setFont("Helvetica", 9)
