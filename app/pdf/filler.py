@@ -306,7 +306,13 @@ def create_kindergeld_pdf(out_path: str, data: Dict[str, Any]) -> None:
     c.rect(40, y_pos, 515, 15)
     
     for header, x, w in table_headers:
-        c.drawString(x + 2, y_pos + 8, header.replace('\n', ' '))
+        # Multi-line Header unterstützen
+        lines = header.split('\n')
+        if len(lines) > 1:
+            c.drawString(x + 2, y_pos + 10, lines[0])
+            c.drawString(x + 2, y_pos + 4, lines[1])
+        else:
+            c.drawString(x + 2, y_pos + 6, header)
     
     y_pos -= 15
     
@@ -339,7 +345,13 @@ def create_kindergeld_pdf(out_path: str, data: Dict[str, Any]) -> None:
     c.rect(40, y_pos, 515, 15)
     
     for header, x, w in table_headers2:
-        c.drawString(x + 2, y_pos + 8, header.replace('\n', ' '))
+        # Multi-line Header unterstützen
+        lines = header.split('\n')
+        if len(lines) > 1:
+            c.drawString(x + 2, y_pos + 10, lines[0])
+            c.drawString(x + 2, y_pos + 4, lines[1])
+        else:
+            c.drawString(x + 2, y_pos + 6, header)
     
     y_pos -= 15
     
