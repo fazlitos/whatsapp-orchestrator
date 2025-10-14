@@ -292,37 +292,36 @@ def create_kindergeld_pdf(out_path: str, data: Dict[str, Any]) -> None:
     y_pos -= 25
     
     # Tabelle für bereits Kindergeld-Kinder (5 Zeilen)
-    table_headers = [
-        ("Vorname des Kindes,\nggf. abweichender Familienname", 40, 160),
-        ("Geburtsdatum", 200, 70),
-        ("Geschlecht", 275, 55),
-        ("Bei welcher Familienkasse\n(Kindergeldnummer, Personalnummer)?", 335, 220)
-    ]
-    
-    # Header zeichnen
-    c.setFont("Helvetica", 7)
+    # Header-Zeile mit mehr Höhe für mehrzeiligen Text
+    c.setFont("Helvetica", 6)
     c.setStrokeColor(LINE_COLOR)
     c.setLineWidth(0.5)
-    c.rect(40, y_pos, 515, 15)
+    c.rect(40, y_pos, 515, 20)  # Höher: 20 statt 15
     
-    for header, x, w in table_headers:
-        # Multi-line Header unterstützen
-        lines = header.split('\n')
-        if len(lines) > 1:
-            c.drawString(x + 2, y_pos + 10, lines[0])
-            c.drawString(x + 2, y_pos + 4, lines[1])
-        else:
-            c.drawString(x + 2, y_pos + 6, header)
+    # Spalten einzeln zeichnen mit Zeilenumbrüchen
+    # Spalte 1: Vorname
+    c.drawString(42, y_pos + 14, "Vorname des Kindes,")
+    c.drawString(42, y_pos + 8, "ggf. abweichender Familienname")
     
-    y_pos -= 15
+    # Spalte 2: Geburtsdatum
+    c.drawString(202, y_pos + 11, "Geburtsdatum")
     
-    # 5 Zeilen für Kinder-Einträge
+    # Spalte 3: Geschlecht
+    c.drawString(277, y_pos + 11, "Geschlecht")
+    
+    # Spalte 4: Bei welcher Familienkasse
+    c.drawString(337, y_pos + 14, "Bei welcher Familienkasse")
+    c.drawString(337, y_pos + 8, "(Kindergeldnummer, Personalnummer)?")
+    
+    y_pos -= 20
+    
+    # 5 Zeilen für Kinder-Einträge (Spalten nahtlos verbunden)
     for i in range(5):
-        c.rect(40, y_pos, 160, 15)
-        c.rect(200, y_pos, 70, 15)
-        c.rect(275, y_pos, 55, 15)
-        c.rect(335, y_pos, 220, 15)
-        y_pos -= 15
+        c.rect(40, y_pos, 160, 18)   # 40 bis 200
+        c.rect(200, y_pos, 75, 18)   # 200 bis 275
+        c.rect(275, y_pos, 60, 18)   # 275 bis 335
+        c.rect(335, y_pos, 220, 18)  # 335 bis 555
+        y_pos -= 18
     
     y_pos -= 15
     
@@ -332,37 +331,39 @@ def create_kindergeld_pdf(out_path: str, data: Dict[str, Any]) -> None:
     y_pos -= 25
     
     # Tabelle für Zählkinder (5 Zeilen)
-    table_headers2 = [
-        ("Vorname des Kindes,\nggf. abweichender Familienname", 40, 160),
-        ("Geburtsdatum", 200, 70),
-        ("Geschlecht", 275, 55),
-        ("Wer bezieht das Kindergeld\n(Name, Vorname)?", 335, 105),
-        ("Bei welcher Familienkasse\n(Kindergeldnummer, Personalnummer)?", 445, 110)
-    ]
+    # Header-Zeile mit mehr Höhe
+    c.setFont("Helvetica", 6)
+    c.rect(40, y_pos, 515, 20)  # Höher: 20 statt 15
     
-    # Header zeichnen
-    c.setFont("Helvetica", 7)
-    c.rect(40, y_pos, 515, 15)
+    # Spalten einzeln zeichnen mit Zeilenumbrüchen
+    # Spalte 1: Vorname
+    c.drawString(42, y_pos + 14, "Vorname des Kindes,")
+    c.drawString(42, y_pos + 8, "ggf. abweichender Familienname")
     
-    for header, x, w in table_headers2:
-        # Multi-line Header unterstützen
-        lines = header.split('\n')
-        if len(lines) > 1:
-            c.drawString(x + 2, y_pos + 10, lines[0])
-            c.drawString(x + 2, y_pos + 4, lines[1])
-        else:
-            c.drawString(x + 2, y_pos + 6, header)
+    # Spalte 2: Geburtsdatum
+    c.drawString(202, y_pos + 11, "Geburtsdatum")
     
-    y_pos -= 15
+    # Spalte 3: Geschlecht
+    c.drawString(277, y_pos + 11, "Geschlecht")
     
-    # 5 Zeilen für Zählkinder
+    # Spalte 4: Wer bezieht das Kindergeld
+    c.drawString(337, y_pos + 14, "Wer bezieht das Kindergeld")
+    c.drawString(337, y_pos + 8, "(Name, Vorname)?")
+    
+    # Spalte 5: Bei welcher Familienkasse
+    c.drawString(447, y_pos + 14, "Bei welcher Familienkasse")
+    c.drawString(447, y_pos + 8, "(Kindergeldnummer, Personalnummer)?")
+    
+    y_pos -= 20
+    
+    # 5 Zeilen für Zählkinder (Spalten nahtlos verbunden)
     for i in range(5):
-        c.rect(40, y_pos, 160, 15)
-        c.rect(200, y_pos, 70, 15)
-        c.rect(275, y_pos, 55, 15)
-        c.rect(335, y_pos, 105, 15)
-        c.rect(445, y_pos, 110, 15)
-        y_pos -= 15
+        c.rect(40, y_pos, 160, 18)   # 40 bis 200
+        c.rect(200, y_pos, 75, 18)   # 200 bis 275
+        c.rect(275, y_pos, 60, 18)   # 275 bis 335
+        c.rect(335, y_pos, 110, 18)  # 335 bis 445
+        c.rect(445, y_pos, 110, 18)  # 445 bis 555
+        y_pos -= 18
     
     y_pos -= 20
     
